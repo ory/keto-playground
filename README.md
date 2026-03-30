@@ -1,4 +1,4 @@
-# Permission Visualizer
+# Keto Playground
 
 Interactive React app for exploring and editing Ory Keto permission graphs. Works in two modes:
 
@@ -39,48 +39,52 @@ In **offline mode**, a **Relationships** panel at the bottom of the graph lets y
 
 ## Prerequisites
 
-- Node.js 18+
-- An Ory Network project with OPL and tuples loaded
-- The `ory` CLI installed
+- Node.js 20+
+- An Ory Network project with OPL and tuples loaded (optional — the app works offline with bundled examples)
 
 ## Quick Start
 
-### 1. Seed Keto with an example
-
-From the project root:
+### Offline (no Ory project needed)
 
 ```bash
-source .env
-bash scripts/seed-keto.sh b2b-hierarchy   # or any other example
+cd permission-visualizer
+make dev
 ```
 
-### 2. Start the Ory tunnel
+Open **http://localhost:5173** — the app detects that no API is configured and uses bundled offline data.
 
-The visualizer needs a local proxy to the Ory Network API:
+### With a live Ory project
+
+1. Copy the env file and fill in your credentials:
 
 ```bash
-source .env
-ory tunnel --dev --port 4000 http://localhost:5173
+cd permission-visualizer
+cp .env.example .env
+# Edit .env with your ORY_SDK_URL and ORY_ACCESS_TOKEN
 ```
 
-This runs on port 4000 and the Vite dev server proxies `/api/*` requests through it. The tunnel injects your `ORY_ACCESS_TOKEN` so the browser never sees the PAT.
-
-### 3. Start the visualizer
+2. Seed an example into Keto:
 
 ```bash
-cd permission-visualizer/app
-npm install
-npm run dev
+make seed EXAMPLE=b2b-hierarchy   # or any example from examples/
 ```
 
-Open **http://localhost:5173** in your browser.
+3. Start the dev server:
 
-### 4. Use it
+```bash
+make dev
+```
 
-1. Select a **Use Case** from the dropdown (must match what's seeded in Keto)
-2. Select a **User** to see their permission graph
-3. The graph builds automatically — nodes are entities, edges are relations
-4. The sidebar shows direct relations and permission check results
+Open **http://localhost:5173**. The Vite dev server proxies `/api/*` requests to your Ory project, injecting the access token so the browser never sees the PAT.
+
+### Docker
+
+```bash
+make docker-build
+make docker-run   # reads .env for ORY_SDK_URL and ORY_ACCESS_TOKEN
+```
+
+The production container uses a zero-dependency Node.js server (`server.js`) that serves the built SPA and proxies `/api/*` to Ory. Runs on port 3000 by default.
 
 ## How It Works
 
@@ -91,14 +95,11 @@ Browser (React + Cytoscape.js)
     |  /api/relation-tuples/check
     |  /api/namespaces
     ▼
-Vite Dev Proxy (:5173/api/*)
+Vite Dev Proxy (:5173/api/*) — or — server.js (:3000/api/*)
     |
     |  + Authorization: Bearer <PAT>
     ▼
-Ory Tunnel (:4000)
-    |
-    ▼
-Ory Network API
+Ory Network API (ORY_SDK_URL)
 ```
 
 1. **Fetch namespaces** — gets the list of entity types from the current OPL
@@ -107,18 +108,22 @@ Ory Network API
 4. **Build graph** — when a user is selected, traces their connections through the tuple graph
 5. **Check permissions** — runs permission checks for all relevant resources and displays ALLOWED/DENIED badges
 
+If no API is reachable, the app falls back to bundled offline data generated from `examples/`.
+
 ## Configuration
 
-The Vite proxy is configured in `vite.config.js`. It reads from the project root `.env`:
+Environment variables are read from `permission-visualizer/.env`:
 
 | Variable           | Default                 | Description                      |
 | ------------------ | ----------------------- | -------------------------------- |
 | `ORY_ACCESS_TOKEN` | (required)              | PAT injected into proxy requests |
 | `ORY_TUNNEL_URL`   | `http://localhost:4000` | Where the ory tunnel is running  |
+| `ORY_SDK_URL`      | —                       | Your Ory project URL (e.g. `https://your-project.projects.oryapis.com`) |
+| `ORY_ACCESS_TOKEN` | —                       | Ory PAT, injected into proxy requests |
 
 ## Available Use Cases
 
-The visualizer supports all 7 examples. The dropdown options are defined in `src/data/examples.js`:
+All 7 examples live in `permission-visualizer/examples/` and are available in the app dropdown:
 
 | Use Case            | Interesting Users to Try                                                                    |
 | ------------------- | ------------------------------------------------------------------------------------------- |
@@ -130,17 +135,32 @@ The visualizer supports all 7 examples. The dropdown options are defined in `src
 | Healthcare Records  | `dr-jones` (multi-patient), `dr-garcia` (emergency access), `dr-specialist-lee` (consented) |
 | Content Publishing  | `writer-alice` (drafts), `editor-diana` (review), `publisher-frank` (publish)               |
 
+## Makefile Targets
+
+Run all targets from `permission-visualizer/`:
+
+| Target | Description |
+|--------|-------------|
+| `make dev` | Start the Vite dev server |
+| `make build` | Install deps and create the production bundle |
+| `make seed EXAMPLE=<name>` | Seed a use case into Ory Keto |
+| `make generate-offline` | Regenerate offline data from `examples/` |
+| `make docker-build` | Build the Docker image |
+| `make docker-run` | Run the container (reads `.env`) |
+| `make clean` | Remove `dist/` and `node_modules/` |
+
 ## Tech Stack
 
 - [React](https://react.dev/) + [Vite](https://vite.dev/)
 - [Cytoscape.js](https://js.cytoscape.org/) with [dagre layout](https://github.com/cytoscape/cytoscape.js-dagre) for directed graph rendering
-- Ory Keto REST API (via tunnel proxy)
+- Ory Keto REST API (via dev proxy or production server)
 
 ## Tests
 
 ```bash
+cd permission-visualizer/app
 npx playwright install chromium
-npx playwright test   # runs all tests
+npx playwright test
 ```
 
 | Test file                           | Requires                                        |
