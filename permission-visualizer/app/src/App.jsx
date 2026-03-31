@@ -9,6 +9,10 @@ import {
   buildGraph,
   getCytoscapeStylesheet,
 } from "./utils/graphBuilder";
+import { deriveUsers } from "./api/ketoClient";
+import { RelationshipEditor } from "./components/RelationshipEditor";
+import { SchemaEditor } from "./components/SchemaEditor";
+import OPL_SCHEMAS from "./data/oplSchemas";
 import "./App.css";
 
 cytoscape.use(dagre);
@@ -26,6 +30,8 @@ function App() {
   const [mode, setMode] = useState("offline");
   const [selectedExample, setSelectedExample] = useState("");
   const [selectedUser, setSelectedUser] = useState("");
+  const [customTuples, setCustomTuples] = useState([]);
+  const [deletedTupleKeys, setDeletedTupleKeys] = useState(new Set());
   const cyRef = useRef(null);
 
   const isLive = mode === "live";
@@ -53,9 +59,11 @@ function App() {
     checkUserPermissions,
   } = isLive ? liveData : offlineData;
 
-  // Reset user when example or mode changes
+  // Reset user + relationship edits when example or mode changes
   useEffect(() => {
     setSelectedUser("");
+    setCustomTuples([]);
+    setDeletedTupleKeys(new Set());
   }, [selectedExample, mode]);
 
   // Reset example when switching modes — auto-select explore in live mode
@@ -70,17 +78,30 @@ function App() {
     }
   }, [selectedUser, checkUserPermissions, isLive]);
 
+  // Merge base tuples with custom edits (offline mode only)
+  const effectiveTuples = useMemo(() => {
+    if (isLive) return tuples;
+    const base = tuples.filter((_, i) => !deletedTupleKeys.has(i));
+    return [...base, ...customTuples];
+  }, [tuples, customTuples, deletedTupleKeys, isLive]);
+
+  // Derive users from effective tuples so newly added subjects appear in the dropdown
+  const effectiveUsers = useMemo(() => {
+    if (isLive) return users;
+    return deriveUsers(effectiveTuples);
+  }, [effectiveTuples, users, isLive]);
+
   // Get user's direct relations for sidebar
   const userRelations = useMemo(() => {
-    if (!selectedUser || tuples.length === 0) return [];
-    return tuples
+    if (!selectedUser || effectiveTuples.length === 0) return [];
+    return effectiveTuples
       .filter((t) => t.subject_id === selectedUser)
       .map((t) => ({
         namespace: t.namespace,
         object: t.object,
         relation: t.relation,
       }));
-  }, [selectedUser, tuples]);
+  }, [selectedUser, effectiveTuples]);
 
   // Permission targets for the sidebar — group by namespace:object
   const permissionsByObject = useMemo(() => {
@@ -151,11 +172,11 @@ function App() {
     return map;
   }, [namespaceLegend]);
 
-  // Build graph elements from tuples + permission results
+  // Build graph elements from effective tuples + permission results
   const graphData = useMemo(() => {
-    if (!selectedUser || tuples.length === 0) return null;
-    return buildGraph(tuples, selectedUser, permissionResults, namespaceColorMap);
-  }, [selectedUser, tuples, permissionResults, namespaceColorMap]);
+    if (!selectedUser || effectiveTuples.length === 0) return null;
+    return buildGraph(effectiveTuples, selectedUser, permissionResults, namespaceColorMap);
+  }, [selectedUser, effectiveTuples, permissionResults, namespaceColorMap]);
 
   const elements = useMemo(() => {
     if (!graphData) return [];
@@ -217,7 +238,7 @@ function App() {
                 <option value="">
                   {loading ? "Loading users..." : "Select a user..."}
                 </option>
-                {users.map((u) => (
+                {effectiveUsers.map((u) => (
                   <option key={u} value={u}>
                     {u}
                   </option>
@@ -241,10 +262,10 @@ function App() {
           )}
 
           {/* Connection status */}
-          {tuples.length > 0 && !loading && !error && (
+          {effectiveTuples.length > 0 && !loading && !error && (
             <div className={`connection-status ${isLive ? "" : "offline"}`}>
               <span className={`status-dot ${isLive ? "live-dot" : "offline-dot"}`} />
-              {isLive ? "Live" : "Offline"} — {tuples.length} tuples, {namespaces.length} namespaces
+              {isLive ? "Live" : "Offline"} — {effectiveTuples.length} tuples, {namespaces.length} namespaces
             </div>
           )}
 
@@ -336,47 +357,79 @@ function App() {
           )}
         </div>
 
-        {/* Graph */}
-        <div className="graph-container">
-          {!selectedExample ? (
-            <div className="empty-state">
-              <div className="icon">&#x1F510;</div>
-              <p>Select a use case to get started</p>
-            </div>
-          ) : loading ? (
-            <div className="empty-state">
-              <div className="icon">&#x23F3;</div>
-              <p>Fetching live data from Ory Keto...</p>
-            </div>
-          ) : error ? (
-            <div className="empty-state">
-              <div className="icon">&#x26A0;&#xFE0F;</div>
-              <p>Failed to connect to Ory Keto</p>
-              <p className="error-detail">{error}</p>
-              <p className="error-hint">
-                Make sure <code>ORY_SDK_URL</code> and <code>ORY_ACCESS_TOKEN</code> are set in your <code>.env</code>
-              </p>
-            </div>
-          ) : !selectedUser ? (
-            <div className="empty-state">
-              <div className="icon">&#x1F464;</div>
-              <p>Select a user to view their permission graph</p>
-            </div>
-          ) : elements.length > 0 ? (
-            <CytoscapeComponent
-              key={`${mode}-${selectedExample}-${selectedUser}`}
-              elements={elements}
-              stylesheet={stylesheet}
-              layout={layout}
-              className="cy"
-              cy={handleCyInit}
-              wheelSensitivity={0.3}
+        {/* Main panel: graph + relationship editor */}
+        <div className="main-panel">
+          <div className="graph-container">
+            {!selectedExample ? (
+              <div className="empty-state">
+                <div className="icon">&#x1F510;</div>
+                <p>Select a use case to get started</p>
+              </div>
+            ) : loading ? (
+              <div className="empty-state">
+                <div className="icon">&#x23F3;</div>
+                <p>Fetching live data from Ory Keto...</p>
+              </div>
+            ) : error ? (
+              <div className="empty-state">
+                <div className="icon">&#x26A0;&#xFE0F;</div>
+                <p>Failed to connect to Ory Keto</p>
+                <p className="error-detail">{error}</p>
+                <p className="error-hint">
+                  Make sure <code>ORY_SDK_URL</code> and <code>ORY_ACCESS_TOKEN</code> are set in your <code>.env</code>
+                </p>
+              </div>
+            ) : !selectedUser ? (
+              <div className="empty-state">
+                <div className="icon">&#x1F464;</div>
+                <p>Select a user to view their permission graph</p>
+              </div>
+            ) : elements.length > 0 ? (
+              <CytoscapeComponent
+                key={`${mode}-${selectedExample}-${selectedUser}`}
+                elements={elements}
+                stylesheet={stylesheet}
+                layout={layout}
+                className="cy"
+                cy={handleCyInit}
+                wheelSensitivity={0.3}
+              />
+            ) : (
+              <div className="empty-state">
+                <div className="icon">&#x1F4CA;</div>
+                <p>No graph data available</p>
+              </div>
+            )}
+          </div>
+
+          {!isLive && selectedExample && (
+            <SchemaEditor
+              key={selectedExample}
+              defaultSchema={OPL_SCHEMAS[selectedExample] ?? ""}
             />
-          ) : (
-            <div className="empty-state">
-              <div className="icon">&#x1F4CA;</div>
-              <p>No graph data available</p>
-            </div>
+          )}
+
+          {!isLive && selectedExample && (
+            <RelationshipEditor
+              baseTuples={tuples}
+              customTuples={customTuples}
+              deletedTupleKeys={deletedTupleKeys}
+              namespaces={namespaces}
+              onAddTuple={(tuple) => setCustomTuples((prev) => [...prev, tuple])}
+              onDeleteBaseTuple={(i) =>
+                setDeletedTupleKeys((prev) => new Set([...prev, i]))
+              }
+              onDeleteCustomTuple={(i) =>
+                setCustomTuples((prev) => prev.filter((_, j) => j !== i))
+              }
+              onUpdateCustomTuple={(i, tuple) =>
+                setCustomTuples((prev) => prev.map((t, j) => (j === i ? tuple : t)))
+              }
+              onReset={() => {
+                setCustomTuples([]);
+                setDeletedTupleKeys(new Set());
+              }}
+            />
           )}
         </div>
       </div>
