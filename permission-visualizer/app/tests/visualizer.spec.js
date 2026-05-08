@@ -10,6 +10,25 @@
  */
 import { test, expect } from "@playwright/test";
 
+// Pick a subject via the two-step Subject Namespace + Subject dropdowns.
+// Returns true on success, false if no namespace/subject options are available.
+async function pickFirstSubject(page) {
+  const subjectNsSelect = page.getByLabel("Subject Namespace");
+  await expect(subjectNsSelect).toBeVisible({ timeout: 10_000 });
+  await expect(async () => {
+    const options = await subjectNsSelect.locator("option").allTextContents();
+    expect(options.length).toBeGreaterThan(1);
+  }).toPass({ timeout: 15_000 });
+  await subjectNsSelect.selectOption({ index: 1 });
+
+  const subjectSelect = page.getByLabel("Subject", { exact: true });
+  await expect(async () => {
+    const options = await subjectSelect.locator("option").allTextContents();
+    expect(options.length).toBeGreaterThan(1);
+  }).toPass({ timeout: 15_000 });
+  await subjectSelect.selectOption({ index: 1 });
+}
+
 // Helper: check that the Keto API is reachable through the proxy
 test.describe("API connectivity", () => {
   test("GET /api/namespaces returns live namespace list", async ({
@@ -102,12 +121,20 @@ test.describe("UI renders with live data", () => {
     await useCaseSelect.selectOption({ index: 1 }); // First real example
 
     // Should show loading indicator briefly, then user dropdown
-    const userSelect = page.locator("select").nth(1);
-    await expect(userSelect).toBeVisible({ timeout: 10_000 });
+    const subjectNsSelect = page.getByLabel("Subject Namespace");
+    await expect(subjectNsSelect).toBeVisible({ timeout: 10_000 });
 
-    // Wait for users to load (the dropdown should have more than just the placeholder)
+    // Wait for subject namespaces to load (more than just the placeholder)
     await expect(async () => {
-      const options = await userSelect.locator("option").allTextContents();
+      const options = await subjectNsSelect.locator("option").allTextContents();
+      expect(options.length).toBeGreaterThan(1);
+    }).toPass({ timeout: 15_000 });
+
+    // Pick the first available namespace, then the first subject within it
+    await subjectNsSelect.selectOption({ index: 1 });
+    const subjectSelect = page.getByLabel("Subject", { exact: true });
+    await expect(async () => {
+      const options = await subjectSelect.locator("option").allTextContents();
       expect(options.length).toBeGreaterThan(1);
     }).toPass({ timeout: 15_000 });
 
@@ -154,15 +181,7 @@ test.describe("UI renders with live data", () => {
     const useCaseSelect = page.locator("select").first();
     await useCaseSelect.selectOption({ label: matchedExample });
 
-    const userSelect = page.locator("select").nth(1);
-    await expect(userSelect).toBeVisible({ timeout: 10_000 });
-    await expect(async () => {
-      const options = await userSelect.locator("option").allTextContents();
-      expect(options.length).toBeGreaterThan(1);
-    }).toPass({ timeout: 15_000 });
-
-    // Select the first user
-    await userSelect.selectOption({ index: 1 });
+    await pickFirstSubject(page);
 
     // Should show permission results section with ALLOWED/DENIED text
     await expect(async () => {
@@ -184,14 +203,7 @@ test.describe("UI renders with live data", () => {
     const useCaseSelect = page.locator("select").first();
     await useCaseSelect.selectOption({ index: 1 });
 
-    const userSelect = page.locator("select").nth(1);
-    await expect(userSelect).toBeVisible({ timeout: 10_000 });
-    await expect(async () => {
-      const options = await userSelect.locator("option").allTextContents();
-      expect(options.length).toBeGreaterThan(1);
-    }).toPass({ timeout: 15_000 });
-
-    await userSelect.selectOption({ index: 1 });
+    await pickFirstSubject(page);
 
     // Cytoscape canvas should appear
     const canvas = page.locator(".cy canvas");
@@ -206,14 +218,7 @@ test.describe("UI renders with live data", () => {
     const useCaseSelect = page.locator("select").first();
     await useCaseSelect.selectOption({ index: 1 });
 
-    const userSelect = page.locator("select").nth(1);
-    await expect(userSelect).toBeVisible({ timeout: 10_000 });
-    await expect(async () => {
-      const options = await userSelect.locator("option").allTextContents();
-      expect(options.length).toBeGreaterThan(1);
-    }).toPass({ timeout: 15_000 });
-
-    await userSelect.selectOption({ index: 1 });
+    await pickFirstSubject(page);
 
     // Should show "Direct Relations" section
     await expect(page.locator("text=Direct Relations")).toBeVisible({
@@ -255,20 +260,15 @@ test.describe("UI renders with live data", () => {
       timeout: 15_000,
     });
 
-    // Select a user
-    const userSelect = page.locator("select").nth(1);
-    await expect(async () => {
-      const options = await userSelect.locator("option").allTextContents();
-      expect(options.length).toBeGreaterThan(1);
-    }).toPass({ timeout: 15_000 });
-    await userSelect.selectOption({ index: 1 });
+    // Select a subject
+    await pickFirstSubject(page);
 
     // Now switch to a different example
     await useCaseSelect.selectOption({ index: 2 });
 
-    // User dropdown should reset
-    const userSelect2 = page.locator("select").nth(1);
-    await expect(userSelect2).toHaveValue("");
+    // Subject dropdowns should reset
+    await expect(page.getByLabel("Subject Namespace")).toHaveValue("");
+    await expect(page.getByLabel("Subject", { exact: true })).toHaveValue("");
 
     // Should re-fetch and show connection status again
     await expect(page.locator(".connection-status")).toBeVisible({

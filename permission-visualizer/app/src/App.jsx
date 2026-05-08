@@ -9,7 +9,7 @@ import {
   buildGraph,
   getCytoscapeStylesheet,
 } from "./utils/graphBuilder";
-import { deriveUsers } from "./api/ketoClient";
+import { deriveSubjects, DIRECT_ID_NAMESPACE } from "./api/ketoClient";
 import { RelationshipEditor } from "./components/RelationshipEditor";
 import { SchemaEditor } from "./components/SchemaEditor";
 import OPL_SCHEMAS from "./data/oplSchemas";
@@ -26,10 +26,19 @@ const DYNAMIC_PALETTE = [
   "#ec4899", "#8b5cf6", "#22c55e", "#f97316", "#14b8a6",
 ];
 
+function subjectTitle(subj) {
+  if (!subj) return "";
+  if (subj.kind === "id") return subj.id;
+  return subj.relation
+    ? `${subj.namespace}:${subj.object}#${subj.relation}`
+    : `${subj.namespace}:${subj.object}`;
+}
+
 function App() {
   const [mode, setMode] = useState("offline");
   const [selectedExample, setSelectedExample] = useState("");
-  const [selectedUser, setSelectedUser] = useState("");
+  const [selectedSubjectNs, setSelectedSubjectNs] = useState("");
+  const [selectedSubjectKey, setSelectedSubjectKey] = useState("");
   const [customTuples, setCustomTuples] = useState([]);
   const [deletedTupleKeys, setDeletedTupleKeys] = useState(new Set());
   const cyRef = useRef(null);
@@ -50,7 +59,6 @@ function App() {
 
   const {
     tuples,
-    users,
     namespaces,
     loading,
     error,
@@ -59,9 +67,10 @@ function App() {
     checkUserPermissions,
   } = isLive ? liveData : offlineData;
 
-  // Reset user + relationship edits when example or mode changes
+  // Reset subject + relationship edits when example or mode changes
   useEffect(() => {
-    setSelectedUser("");
+    setSelectedSubjectNs("");
+    setSelectedSubjectKey("");
     setCustomTuples([]);
     setDeletedTupleKeys(new Set());
   }, [selectedExample, mode]);
@@ -71,13 +80,6 @@ function App() {
     setSelectedExample(mode === "live" ? EXPLORE_KEY : "");
   }, [mode]);
 
-  // Check permissions when user changes (live mode only)
-  useEffect(() => {
-    if (selectedUser && isLive) {
-      checkUserPermissions(selectedUser);
-    }
-  }, [selectedUser, checkUserPermissions, isLive]);
-
   // Merge base tuples with custom edits (offline mode only)
   const effectiveTuples = useMemo(() => {
     if (isLive) return tuples;
@@ -85,23 +87,75 @@ function App() {
     return [...base, ...customTuples];
   }, [tuples, customTuples, deletedTupleKeys, isLive]);
 
-  // Derive users from effective tuples so newly added subjects appear in the dropdown
-  const effectiveUsers = useMemo(() => {
-    if (isLive) return users;
-    return deriveUsers(effectiveTuples);
-  }, [effectiveTuples, users, isLive]);
+  // Derive subjects from effective tuples (live or offline) so newly added
+  // subjects appear in the dropdowns immediately.
+  const effectiveSubjects = useMemo(
+    () => deriveSubjects(effectiveTuples),
+    [effectiveTuples]
+  );
 
-  // Get user's direct relations for sidebar
+  // Sorted list of namespaces for the Subject Namespace dropdown.
+  // Direct ID group always comes first if present.
+  const subjectNamespaces = useMemo(() => {
+    const keys = Object.keys(effectiveSubjects);
+    const hasDirect = keys.includes(DIRECT_ID_NAMESPACE);
+    const rest = keys.filter((k) => k !== DIRECT_ID_NAMESPACE).sort();
+    return hasDirect ? [DIRECT_ID_NAMESPACE, ...rest] : rest;
+  }, [effectiveSubjects]);
+
+  // Subject options for the chosen namespace, with stable string keys for the dropdown.
+  const subjectOptions = useMemo(() => {
+    if (!selectedSubjectNs) return [];
+    const list = effectiveSubjects[selectedSubjectNs] || [];
+    if (selectedSubjectNs === DIRECT_ID_NAMESPACE) {
+      return list.map((s) => ({ key: s.id, label: s.id, kind: "id", id: s.id }));
+    }
+    return list.map((s) => {
+      const key = `${s.object}#${s.relation || ""}`;
+      const label = s.relation ? `${s.object} #${s.relation}` : s.object;
+      return {
+        key,
+        label,
+        kind: "set",
+        namespace: selectedSubjectNs,
+        object: s.object,
+        relation: s.relation || "",
+      };
+    });
+  }, [effectiveSubjects, selectedSubjectNs]);
+
+  // Resolve the selected subject spec from the two dropdown values.
+  const selectedSubject = useMemo(() => {
+    if (!selectedSubjectNs || !selectedSubjectKey) return null;
+    return subjectOptions.find((o) => o.key === selectedSubjectKey) || null;
+  }, [selectedSubjectNs, selectedSubjectKey, subjectOptions]);
+
+  // Run live permission checks when the resolved subject changes.
+  useEffect(() => {
+    if (selectedSubject && isLive) {
+      checkUserPermissions(selectedSubject);
+    }
+  }, [selectedSubject, checkUserPermissions, isLive]);
+
+  // Get the subject's direct relations for the sidebar.
   const userRelations = useMemo(() => {
-    if (!selectedUser || effectiveTuples.length === 0) return [];
+    if (!selectedSubject || effectiveTuples.length === 0) return [];
     return effectiveTuples
-      .filter((t) => t.subject_id === selectedUser)
+      .filter((t) => {
+        if (selectedSubject.kind === "id") return t.subject_id === selectedSubject.id;
+        return (
+          t.subject_set &&
+          t.subject_set.namespace === selectedSubject.namespace &&
+          t.subject_set.object === selectedSubject.object &&
+          (t.subject_set.relation || "") === (selectedSubject.relation || "")
+        );
+      })
       .map((t) => ({
         namespace: t.namespace,
         object: t.object,
         relation: t.relation,
       }));
-  }, [selectedUser, effectiveTuples]);
+  }, [selectedSubject, effectiveTuples]);
 
   // Permission targets for the sidebar — group by namespace:object
   const permissionsByObject = useMemo(() => {
@@ -174,9 +228,9 @@ function App() {
 
   // Build graph elements from effective tuples + permission results
   const graphData = useMemo(() => {
-    if (!selectedUser || effectiveTuples.length === 0) return null;
-    return buildGraph(effectiveTuples, selectedUser, permissionResults, namespaceColorMap);
-  }, [selectedUser, effectiveTuples, permissionResults, namespaceColorMap]);
+    if (!selectedSubject || effectiveTuples.length === 0) return null;
+    return buildGraph(effectiveTuples, selectedSubject, permissionResults, namespaceColorMap);
+  }, [selectedSubject, effectiveTuples, permissionResults, namespaceColorMap]);
 
   const elements = useMemo(() => {
     if (!graphData) return [];
@@ -228,23 +282,53 @@ function App() {
             </select>
           </div>
           {(exampleMeta || (!isLive && selectedExample)) && (
-            <div className="selector-group">
-              <label>User</label>
-              <select
-                value={selectedUser}
-                onChange={(e) => setSelectedUser(e.target.value)}
-                disabled={loading}
-              >
-                <option value="">
-                  {loading ? "Loading users..." : "Select a user..."}
-                </option>
-                {effectiveUsers.map((u) => (
-                  <option key={u} value={u}>
-                    {u}
+            <>
+              <div className="selector-group">
+                <label>Subject Namespace</label>
+                <select
+                  aria-label="Subject Namespace"
+                  value={selectedSubjectNs}
+                  onChange={(e) => {
+                    setSelectedSubjectNs(e.target.value);
+                    setSelectedSubjectKey("");
+                  }}
+                  disabled={loading || subjectNamespaces.length === 0}
+                >
+                  <option value="">
+                    {loading
+                      ? "Loading subjects..."
+                      : subjectNamespaces.length === 0
+                        ? "No subjects found"
+                        : "Select a namespace..."}
                   </option>
-                ))}
-              </select>
-            </div>
+                  {subjectNamespaces.map((ns) => (
+                    <option key={ns} value={ns}>
+                      {ns}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="selector-group">
+                <label>Subject</label>
+                <select
+                  aria-label="Subject"
+                  value={selectedSubjectKey}
+                  onChange={(e) => setSelectedSubjectKey(e.target.value)}
+                  disabled={loading || !selectedSubjectNs}
+                >
+                  <option value="">
+                    {!selectedSubjectNs
+                      ? "Pick a namespace first..."
+                      : "Select a subject..."}
+                  </option>
+                  {subjectOptions.map((opt) => (
+                    <option key={opt.key} value={opt.key}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </>
           )}
           {loading && <div className="status-indicator loading">Fetching tuples...</div>}
           {loadingPermissions && (
@@ -287,13 +371,13 @@ function App() {
             </div>
           )}
 
-          {/* User's Direct Relations */}
-          {selectedUser && userRelations.length > 0 && (
+          {/* Subject's Direct Relations */}
+          {selectedSubject && userRelations.length > 0 && (
             <>
               <h2>Direct Relations</h2>
               <div className="relations-list">
                 {userRelations.map((r, i) => (
-                  <div className="relation-item" key={i} title={`${selectedUser} -> ${r.relation} -> ${r.namespace}:${r.object}`}>
+                  <div className="relation-item" key={i} title={`${subjectTitle(selectedSubject)} -> ${r.relation} -> ${r.namespace}:${r.object}`}>
                     <span className="rel-label">{r.relation}</span>
                     <span className="rel-arrow">-&gt;</span>
                     <span>
@@ -306,7 +390,7 @@ function App() {
           )}
 
           {/* Permission Results (live mode) */}
-          {isLive && selectedUser && permissionsByObject.length > 0 && (
+          {isLive && selectedSubject && permissionsByObject.length > 0 && (
             <>
               <h2 style={{ marginTop: 24 }}>Permissions</h2>
               <div className="permissions-grid">
@@ -333,12 +417,12 @@ function App() {
             </>
           )}
 
-          {isLive && selectedUser && loadingPermissions && (
+          {isLive && selectedSubject && loadingPermissions && (
             <div className="loading-permissions">Checking permissions...</div>
           )}
 
           {/* Offline CTA — shown instead of permissions in offline mode */}
-          {!isLive && selectedUser && userRelations.length > 0 && (
+          {!isLive && selectedSubject && userRelations.length > 0 && (
             <div className="offline-cta">
               <h2 style={{ marginTop: 24 }}>Permissions</h2>
               <p>
@@ -379,14 +463,14 @@ function App() {
                   Make sure <code>ORY_SDK_URL</code> and <code>ORY_ACCESS_TOKEN</code> are set in your <code>.env</code>
                 </p>
               </div>
-            ) : !selectedUser ? (
+            ) : !selectedSubject ? (
               <div className="empty-state">
                 <div className="icon">&#x1F464;</div>
-                <p>Select a user to view their permission graph</p>
+                <p>Select a subject to view its permission graph</p>
               </div>
             ) : elements.length > 0 ? (
               <CytoscapeComponent
-                key={`${mode}-${selectedExample}-${selectedUser}`}
+                key={`${mode}-${selectedExample}-${selectedSubjectNs}-${selectedSubjectKey}`}
                 elements={elements}
                 stylesheet={stylesheet}
                 layout={layout}

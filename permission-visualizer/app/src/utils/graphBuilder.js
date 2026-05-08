@@ -24,46 +24,65 @@ const NAMESPACE_COLORS = {
 };
 
 /**
- * Build cytoscape elements for a user's permission graph.
- * @param {Array} tuples - All relation tuples for this example
- * @param {string} userId - The selected user ID
+ * Build cytoscape elements for a subject's permission graph.
+ *
+ * @param {Array} tuples - All relation tuples
+ * @param {object|string} subject - Subject spec: { kind:'id', id, namespace? } or
+ *   { kind:'set', namespace, object, relation }. A bare string is treated as a direct id.
  * @param {Array} permissionResults - Array of { namespace, object, permission, allowed }
- * @param {Object} [colorOverrides] - Optional namespace->color map (overrides defaults)
+ * @param {Object} [colorOverrides] - Optional namespace->color map
  * @returns {{ nodes: Array, edges: Array }}
  */
-export function buildGraph(tuples, userId, permissionResults = [], colorOverrides = {}) {
+export function buildGraph(tuples, subject, permissionResults = [], colorOverrides = {}) {
+  const subj = normalizeSubject(subject);
+  if (!subj) return { nodes: [], edges: [] };
+
   const nodeMap = new Map();
   const edges = [];
 
-  // Add the selected user as the central node
-  addNode(nodeMap, "User", userId, true, colorOverrides);
+  // Central node + first-pass filter differ by subject kind.
+  let centerId;
+  let firstPassTuples;
+  if (subj.kind === "id") {
+    const ns = subj.namespace || "User";
+    centerId = `${ns}:${subj.id}`;
+    addNode(nodeMap, ns, subj.id, true, colorOverrides);
+    firstPassTuples = tuples.filter((t) => t.subject_id === subj.id);
+  } else {
+    centerId = `${subj.namespace}:${subj.object}`;
+    addNode(nodeMap, subj.namespace, subj.object, true, colorOverrides);
+    firstPassTuples = tuples.filter(
+      (t) =>
+        t.subject_set &&
+        t.subject_set.namespace === subj.namespace &&
+        t.subject_set.object === subj.object &&
+        (t.subject_set.relation || "") === (subj.relation || "")
+    );
+  }
 
-  // First pass: find all tuples where this user is the subject
-  const userTuples = tuples.filter(
-    (t) => t.subject_id === userId
-  );
-
-  // Build a set of objects/namespaces connected to the user
+  // Build a set of objects/namespaces connected to the subject
   const connectedEntities = new Set();
 
-  for (const t of userTuples) {
+  for (const t of firstPassTuples) {
     const targetId = `${t.namespace}:${t.object}`;
     addNode(nodeMap, t.namespace, t.object, false, colorOverrides);
     connectedEntities.add(targetId);
+    const label =
+      subj.kind === "set" && subj.relation
+        ? `${t.relation} (from #${subj.relation})`
+        : t.relation;
     edges.push({
       data: {
-        id: `e-${userId}-${t.relation}-${targetId}`,
-        source: `User:${userId}`,
+        id: `e-${centerId}-${t.relation}-${targetId}`,
+        source: centerId,
         target: targetId,
-        label: t.relation,
+        label,
         relation: t.relation,
       },
     });
   }
 
-  // Second pass: find tuples where the user is part of a subject_set
-  // e.g., User is member of Role:admin, and Role:admin is an allowed_role on Application:X
-  // We need to find Role:admin -> Application:X edges too
+  // Multi-hop traversal: surface chains the subject reaches via subject sets and outgoing relations.
   const intermediateEntities = new Set(connectedEntities);
   let changed = true;
   let depth = 0;
@@ -104,12 +123,11 @@ export function buildGraph(tuples, userId, permissionResults = [], colorOverride
         }
       }
 
-      // Also add tuples where entities the user reaches have outgoing relations
-      // (e.g. MedicalRecord.patient -> Patient, Customer.parent_lob -> LOB)
+      // Also add tuples where entities the subject reaches have outgoing relations
       const sourceId = `${t.namespace}:${t.object}`;
       if (currentEntities.has(sourceId)) {
-        if (t.subject_id && t.subject_id !== userId) {
-          // Don't add other users to the graph unless they're already connected
+        if (t.subject_id && (subj.kind !== "id" || t.subject_id !== subj.id)) {
+          // Don't add unrelated direct subjects to the graph
         } else if (t.subject_set) {
           const ssId = `${t.subject_set.namespace}:${t.subject_set.object}`;
           addNode(nodeMap, t.subject_set.namespace, t.subject_set.object, false, colorOverrides);
@@ -134,9 +152,8 @@ export function buildGraph(tuples, userId, permissionResults = [], colorOverride
     }
   }
 
-  // Third pass: attach permission results to nodes already in the graph,
-  // and only add new nodes for resources the user is actually ALLOWED to access
-  // (avoids flooding the graph with disconnected denied nodes)
+  // Attach permission results to nodes already in the graph; only add new nodes
+  // for resources the subject is actually ALLOWED to access (avoids disconnected denied nodes).
   for (const pr of permissionResults) {
     const nodeId = `${pr.namespace}:${pr.object}`;
     const existingNode = nodeMap.get(nodeId);
@@ -157,14 +174,41 @@ export function buildGraph(tuples, userId, permissionResults = [], colorOverride
     }
   }
 
-  // Mark the user node
-  const userNode = nodeMap.get(`User:${userId}`);
-  if (userNode) {
-    userNode.data.isSelectedUser = true;
+  // Mark the central subject node
+  const centerNode = nodeMap.get(centerId);
+  if (centerNode) {
+    centerNode.data.isSelectedUser = true;
+    if (subj.kind === "set" && subj.relation) {
+      centerNode.data.label = `${subj.object} #${subj.relation}`;
+    }
   }
 
   const nodes = Array.from(nodeMap.values());
   return { nodes, edges };
+}
+
+function normalizeSubject(subject) {
+  if (!subject) return null;
+  if (typeof subject === "string") {
+    return subject ? { kind: "id", id: subject } : null;
+  }
+  if (subject.kind === "id" && subject.id) {
+    return { kind: "id", id: subject.id, namespace: subject.namespace };
+  }
+  if (
+    subject.kind === "set" &&
+    subject.namespace &&
+    subject.object &&
+    subject.relation !== undefined
+  ) {
+    return {
+      kind: "set",
+      namespace: subject.namespace,
+      object: subject.object,
+      relation: subject.relation || "",
+    };
+  }
+  return null;
 }
 
 function addNode(nodeMap, namespace, object, isUser = false, colorOverrides = {}) {
@@ -225,8 +269,7 @@ export function getCytoscapeStylesheet() {
         "border-width": 2,
         "border-color": "data(color)",
         "background-opacity": 0.2,
-        "text-wrap": "ellipsis",
-        "text-max-width": "80px",
+        "text-wrap": "none",
       },
     },
     {

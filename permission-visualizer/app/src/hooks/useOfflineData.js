@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from "react";
 import OFFLINE_EXAMPLES from "../data/offlineExamples";
-import { deriveUsers } from "../api/ketoClient";
+import { deriveSubjects } from "../api/ketoClient";
 
 /**
  * Hook that provides tuple data from bundled offline examples.
@@ -14,7 +14,7 @@ export function useOfflineData(exampleKey) {
     return OFFLINE_EXAMPLES[exampleKey];
   }, [exampleKey]);
 
-  const users = useMemo(() => deriveUsers(tuples), [tuples]);
+  const subjects = useMemo(() => deriveSubjects(tuples), [tuples]);
 
   const namespaces = useMemo(() => {
     const ns = new Set();
@@ -26,7 +26,7 @@ export function useOfflineData(exampleKey) {
 
   return {
     tuples,
-    users,
+    subjects,
     namespaces,
     loading: false,
     error: null,

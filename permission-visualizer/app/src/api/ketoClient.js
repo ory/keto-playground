@@ -57,13 +57,17 @@ export async function fetchAllTuples(namespaces) {
 
 /**
  * Check a single permission via POST /relation-tuples/check.
- * Returns { allowed: boolean }.
+ * Pass either subject_id (string) or subject_set ({namespace, object, relation}).
+ * Returns boolean.
  */
-export async function checkPermission({ namespace, object, relation, subject_id }) {
+export async function checkPermission({ namespace, object, relation, subject_id, subject_set }) {
+  const body = { namespace, object, relation };
+  if (subject_set) body.subject_set = subject_set;
+  else body.subject_id = subject_id;
   const res = await fetch(`${API}/relation-tuples/check`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ namespace, object, relation, subject_id }),
+    body: JSON.stringify(body),
   });
   // Ory returns 200 for allowed, 403 for denied (both with JSON body)
   const data = await res.json();
@@ -73,6 +77,7 @@ export async function checkPermission({ namespace, object, relation, subject_id 
 /**
  * Check multiple permissions in sequence (Ory doesn't have a batch endpoint
  * on the public check API; doing them individually).
+ * Each check entry may carry subject_id or subject_set.
  * Returns an array of { namespace, object, permission, allowed } results.
  */
 export async function checkPermissions(checks) {
@@ -88,6 +93,7 @@ export async function checkPermissions(checks) {
           object: c.object,
           relation: c.permission,
           subject_id: c.subject_id,
+          subject_set: c.subject_set,
         });
         return { ...c, allowed };
       })
@@ -100,6 +106,7 @@ export async function checkPermissions(checks) {
 /**
  * Derive the list of users from tuples.
  * A "user" is any subject_id that appears in the tuples.
+ * Kept for back-compat; new code should use deriveSubjects.
  */
 export function deriveUsers(tuples) {
   const userSet = new Set();
@@ -109,4 +116,54 @@ export function deriveUsers(tuples) {
     }
   }
   return Array.from(userSet).sort();
+}
+
+/**
+ * Synthetic "namespace" key under which all bare subject_id values are grouped,
+ * since Keto's subject_id is namespace-less.
+ */
+export const DIRECT_ID_NAMESPACE = "Direct ID";
+
+/**
+ * Derive every distinct subject across all tuples, grouped by namespace.
+ *
+ * Returns:
+ *   {
+ *     [DIRECT_ID_NAMESPACE]: [{ id }, ...],
+ *     [namespace]: [{ object, relation }, ...],
+ *     ...
+ *   }
+ *
+ * Direct subject_ids are grouped under DIRECT_ID_NAMESPACE.
+ * Subject sets are grouped by their namespace and listed as object#relation pairs.
+ */
+export function deriveSubjects(tuples) {
+  const directIds = new Set();
+  const setsByNs = new Map();
+
+  for (const t of tuples) {
+    if (t.subject_id) {
+      directIds.add(t.subject_id);
+    } else if (t.subject_set) {
+      const { namespace, object, relation } = t.subject_set;
+      if (!namespace || !object) continue;
+      if (!setsByNs.has(namespace)) setsByNs.set(namespace, new Map());
+      const key = `${object}#${relation || ""}`;
+      setsByNs.get(namespace).set(key, { object, relation: relation || "" });
+    }
+  }
+
+  const result = {};
+  if (directIds.size > 0) {
+    result[DIRECT_ID_NAMESPACE] = Array.from(directIds)
+      .sort()
+      .map((id) => ({ id }));
+  }
+  for (const [ns, map] of setsByNs) {
+    result[ns] = Array.from(map.values()).sort((a, b) => {
+      if (a.object !== b.object) return a.object.localeCompare(b.object);
+      return a.relation.localeCompare(b.relation);
+    });
+  }
+  return result;
 }

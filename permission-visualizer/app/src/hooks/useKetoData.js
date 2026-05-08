@@ -3,18 +3,18 @@ import {
   fetchNamespaces,
   fetchAllTuples,
   checkPermissions,
-  deriveUsers,
+  deriveSubjects,
 } from "../api/ketoClient";
 
 /**
  * React hook that fetches live Keto data (namespaces, tuples, permission checks).
  *
  * @param {object|null} exampleMeta - The selected example metadata (permissions, etc.)
- * @returns {{ tuples, users, namespaces, loading, error, permissionResults, loadingPermissions, checkUserPermissions }}
+ * @returns {{ tuples, subjects, namespaces, loading, error, permissionResults, loadingPermissions, checkUserPermissions }}
  */
 export function useKetoData(exampleMeta) {
   const [tuples, setTuples] = useState([]);
-  const [users, setUsers] = useState([]);
+  const [subjects, setSubjects] = useState({});
   const [namespaces, setNamespaces] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -26,7 +26,7 @@ export function useKetoData(exampleMeta) {
   useEffect(() => {
     if (!exampleMeta) {
       setTuples([]);
-      setUsers([]);
+      setSubjects({});
       setNamespaces([]);
       setError(null);
       setPermissionResults([]);
@@ -47,7 +47,7 @@ export function useKetoData(exampleMeta) {
         const allTuples = await fetchAllTuples(ns);
         if (cancelled) return;
         setTuples(allTuples);
-        setUsers(deriveUsers(allTuples));
+        setSubjects(deriveSubjects(allTuples));
       } catch (err) {
         if (!cancelled) setError(err.message);
       } finally {
@@ -60,10 +60,10 @@ export function useKetoData(exampleMeta) {
     };
   }, [exampleMeta]);
 
-  // Check permissions for a specific user
+  // Check permissions for a specific subject (direct id or subject set).
   const checkUserPermissions = useCallback(
-    async (userId) => {
-      if (!exampleMeta || !userId || tuples.length === 0) {
+    async (subject) => {
+      if (!exampleMeta || !subject || tuples.length === 0) {
         setPermissionResults([]);
         return;
       }
@@ -76,6 +76,17 @@ export function useKetoData(exampleMeta) {
       setLoadingPermissions(true);
 
       try {
+        const subjectFields =
+          subject.kind === "set"
+            ? {
+                subject_set: {
+                  namespace: subject.namespace,
+                  object: subject.object,
+                  relation: subject.relation,
+                },
+              }
+            : { subject_id: subject.id };
+
         // Build the check matrix: for each permission def, for each unique object
         // in that namespace, for each permission name
         const checks = [];
@@ -92,7 +103,7 @@ export function useKetoData(exampleMeta) {
                 namespace: permDef.namespace,
                 object: obj,
                 permission: perm,
-                subject_id: userId,
+                ...subjectFields,
               });
             }
           }
@@ -117,7 +128,7 @@ export function useKetoData(exampleMeta) {
 
   return {
     tuples,
-    users,
+    subjects,
     namespaces,
     loading,
     error,
