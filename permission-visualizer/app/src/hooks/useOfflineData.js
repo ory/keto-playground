@@ -23,6 +23,7 @@ export function useOfflineData(exampleKey) {
   }, [tuples]);
 
   const checkUserPermissions = useCallback(() => {}, []);
+  const refetch = useCallback(async () => {}, []);
 
   return {
     tuples,
@@ -33,6 +34,7 @@ export function useOfflineData(exampleKey) {
     permissionResults,
     loadingPermissions: false,
     checkUserPermissions,
+    refetch,
   };
 }
 

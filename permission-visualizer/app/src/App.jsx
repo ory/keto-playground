@@ -9,7 +9,7 @@ import {
   buildGraph,
   getCytoscapeStylesheet,
 } from "./utils/graphBuilder";
-import { deriveSubjects, DIRECT_ID_NAMESPACE } from "./api/ketoClient";
+import { deriveSubjects, DIRECT_ID_NAMESPACE, deleteRelationTuples } from "./api/ketoClient";
 import { RelationshipEditor } from "./components/RelationshipEditor";
 import { SchemaEditor } from "./components/SchemaEditor";
 import OPL_SCHEMAS from "./data/oplSchemas";
@@ -39,8 +39,13 @@ function App() {
   const [selectedExample, setSelectedExample] = useState("");
   const [selectedSubjectNs, setSelectedSubjectNs] = useState("");
   const [selectedSubjectKey, setSelectedSubjectKey] = useState("");
+  const [selectedBranchKey, setSelectedBranchKey] = useState("");
   const [customTuples, setCustomTuples] = useState([]);
   const [deletedTupleKeys, setDeletedTupleKeys] = useState(new Set());
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null); // { node, tuples }
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
   const cyRef = useRef(null);
 
   const isLive = mode === "live";
@@ -65,15 +70,25 @@ function App() {
     permissionResults,
     loadingPermissions,
     checkUserPermissions,
+    refetch,
   } = isLive ? liveData : offlineData;
 
-  // Reset subject + relationship edits when example or mode changes
+  // Reset subject + relationship edits + node selection when example or mode changes
   useEffect(() => {
     setSelectedSubjectNs("");
     setSelectedSubjectKey("");
+    setSelectedBranchKey("");
     setCustomTuples([]);
     setDeletedTupleKeys(new Set());
+    setSelectedNodeId(null);
+    setConfirmDelete(null);
+    setDeleteError(null);
   }, [selectedExample, mode]);
+
+  // Reset branch filter whenever the subject changes
+  useEffect(() => {
+    setSelectedBranchKey("");
+  }, [selectedSubjectNs, selectedSubjectKey]);
 
   // Reset example when switching modes — auto-select explore in live mode
   useEffect(() => {
@@ -171,14 +186,23 @@ function App() {
     return Array.from(map.values());
   }, [permissionResults]);
 
-  // Cytoscape layout
+  // Cytoscape layout — concentric: subject in the middle, leaves bucketed into 4 outer rings
+  // (deterministic by id hash) so 100+ nodes don't all pile onto one ring.
   const layout = useMemo(
     () => ({
-      name: "dagre",
-      rankDir: "LR",
-      spacingFactor: 1.5,
-      nodeSep: 60,
-      rankSep: 120,
+      name: "concentric",
+      concentric: (n) => {
+        if (n.data("isSelectedUser")) return 1000;
+        const id = n.data("id") || "";
+        let h = 0;
+        for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+        return 100 - (h % 4) * 15; // 100, 85, 70, 55 — four outer rings
+      },
+      levelWidth: () => 1,
+      minNodeSpacing: 60,
+      spacingFactor: 1.4,
+      fit: true,
+      padding: 40,
       animate: true,
       animationDuration: 300,
     }),
@@ -191,6 +215,13 @@ function App() {
     cyRef.current = cy;
     cy.on("layoutstop", () => {
       cy.fit(undefined, 40);
+    });
+    cy.on("tap", "node", (evt) => {
+      setSelectedNodeId(evt.target.id());
+    });
+    cy.on("tap", (evt) => {
+      // Background click clears selection (but only if it's not on a node)
+      if (evt.target === cy) setSelectedNodeId(null);
     });
   }, []);
 
@@ -226,16 +257,121 @@ function App() {
     return map;
   }, [namespaceLegend]);
 
+  // Unique nodes (namespace:object) that the subject directly relates to.
+  const branchNodes = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const r of userRelations) {
+      const key = `${r.namespace}:${r.object}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, namespace: r.namespace, object: r.object });
+    }
+    return out;
+  }, [userRelations]);
+
+  // Branch filter — selectedBranchKey is "namespace:object"; null relation = any relation.
+  const branchFilter = useMemo(() => {
+    if (!selectedBranchKey) return null;
+    const node = branchNodes.find((n) => n.key === selectedBranchKey);
+    return node ? { namespace: node.namespace, object: node.object, relation: null } : null;
+  }, [selectedBranchKey, branchNodes]);
+
   // Build graph elements from effective tuples + permission results
   const graphData = useMemo(() => {
     if (!selectedSubject || effectiveTuples.length === 0) return null;
-    return buildGraph(effectiveTuples, selectedSubject, permissionResults, namespaceColorMap);
-  }, [selectedSubject, effectiveTuples, permissionResults, namespaceColorMap]);
+    return buildGraph(effectiveTuples, selectedSubject, permissionResults, namespaceColorMap, undefined, branchFilter);
+  }, [selectedSubject, effectiveTuples, permissionResults, namespaceColorMap, branchFilter]);
 
   const elements = useMemo(() => {
     if (!graphData) return [];
     return [...graphData.nodes, ...graphData.edges];
   }, [graphData]);
+
+  // Clear stale node selection if the node is no longer in the graph (e.g., after refetch).
+  useEffect(() => {
+    if (!selectedNodeId) return;
+    const exists = graphData?.nodes.some((n) => n.data.id === selectedNodeId);
+    if (!exists) setSelectedNodeId(null);
+  }, [graphData, selectedNodeId]);
+
+  // Tuples directly involving the clicked node: it's either the object
+  // or a subject_set anchor. For the central direct-id node, also includes
+  // tuples where the id is subject_id.
+  const doomed = useMemo(() => {
+    if (!selectedNodeId || !graphData) return null;
+
+    const node = graphData.nodes.find((n) => n.data.id === selectedNodeId);
+    if (!node) return null;
+    const meta = { namespace: node.data.namespace, object: node.data.label };
+
+    const isCenterDirectId =
+      selectedSubject?.kind === "id" &&
+      selectedNodeId === `${selectedSubject.namespace || "User"}:${selectedSubject.id}`;
+
+    const matchedTuples = [];
+    const seen = new Set();
+    const pushTuple = (t) => {
+      const key = JSON.stringify({
+        n: t.namespace,
+        o: t.object,
+        r: t.relation,
+        sid: t.subject_id || null,
+        ss: t.subject_set || null,
+      });
+      if (seen.has(key)) return;
+      seen.add(key);
+      matchedTuples.push(t);
+    };
+
+    for (const t of effectiveTuples) {
+      if (t.namespace === meta.namespace && t.object === meta.object) {
+        pushTuple(t);
+        continue;
+      }
+      if (
+        t.subject_set &&
+        t.subject_set.namespace === meta.namespace &&
+        t.subject_set.object === meta.object
+      ) {
+        pushTuple(t);
+      }
+    }
+
+    if (isCenterDirectId) {
+      for (const t of effectiveTuples) {
+        if (t.subject_id === selectedSubject.id) pushTuple(t);
+      }
+    }
+
+    return {
+      nodeId: selectedNodeId,
+      label: meta.object,
+      namespace: meta.namespace || "",
+      tuples: matchedTuples,
+    };
+  }, [selectedNodeId, graphData, effectiveTuples, selectedSubject]);
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!confirmDelete || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const { errors } = await deleteRelationTuples(confirmDelete.tuples);
+      if (errors.length > 0) {
+        setDeleteError(
+          `Deleted ${confirmDelete.tuples.length - errors.length} of ${confirmDelete.tuples.length} tuples; ${errors.length} failed (${errors[0].reason})`
+        );
+      }
+      setConfirmDelete(null);
+      setSelectedNodeId(null);
+      await refetch();
+    } catch (err) {
+      setDeleteError(err.message);
+    } finally {
+      setDeleting(false);
+    }
+  }, [confirmDelete, deleting, refetch]);
 
   // Which example keys to show in the dropdown
   const dropdownKeys = isLive ? exampleKeys : offlineKeys;
@@ -328,6 +464,26 @@ function App() {
                   ))}
                 </select>
               </div>
+              <div className="selector-group">
+                <label>Branch</label>
+                <select
+                  aria-label="Branch"
+                  value={selectedBranchKey}
+                  onChange={(e) => setSelectedBranchKey(e.target.value)}
+                  disabled={!selectedSubject || branchNodes.length === 0}
+                >
+                  <option value="">
+                    {branchNodes.length === 0
+                      ? "No branches"
+                      : `All branches (${branchNodes.length})`}
+                  </option>
+                  {branchNodes.map((n) => (
+                    <option key={n.key} value={n.key}>
+                      {n.key}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </>
           )}
           {loading && <div className="status-indicator loading">Fetching tuples...</div>}
@@ -368,6 +524,34 @@ function App() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Selected Node — live-mode-only delete panel */}
+          {isLive && doomed && (
+            <div className="node-delete-panel">
+              <h2>Selected Node</h2>
+              <div className="node-info">
+                <div className="node-id">
+                  {doomed.namespace ? `${doomed.namespace}:${doomed.label}` : doomed.label}
+                </div>
+                <div className="node-counts">
+                  {doomed.tuples.length} tuple{doomed.tuples.length === 1 ? "" : "s"} reference this node
+                </div>
+              </div>
+              <button
+                className="btn-danger"
+                disabled={doomed.tuples.length === 0 || deleting}
+                onClick={() =>
+                  setConfirmDelete({
+                    label: doomed.namespace ? `${doomed.namespace}:${doomed.label}` : doomed.label,
+                    tuples: doomed.tuples,
+                  })
+                }
+              >
+                Delete {doomed.tuples.length} tuple{doomed.tuples.length === 1 ? "" : "s"}
+              </button>
+              {deleteError && <div className="delete-error">{deleteError}</div>}
             </div>
           )}
 
@@ -470,7 +654,7 @@ function App() {
               </div>
             ) : elements.length > 0 ? (
               <CytoscapeComponent
-                key={`${mode}-${selectedExample}-${selectedSubjectNs}-${selectedSubjectKey}`}
+                key={`${mode}-${selectedExample}-${selectedSubjectNs}-${selectedSubjectKey}-${selectedBranchKey}`}
                 elements={elements}
                 stylesheet={stylesheet}
                 layout={layout}
@@ -517,6 +701,51 @@ function App() {
           )}
         </div>
       </div>
+
+      {confirmDelete && (
+        <div className="modal-overlay" onClick={() => !deleting && setConfirmDelete(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Delete {confirmDelete.tuples.length} tuple{confirmDelete.tuples.length === 1 ? "" : "s"}?</h2>
+            <p className="modal-warn">
+              This will permanently delete the following tuples from Ory Keto.
+              All tuples involving <strong>{confirmDelete.label}</strong> (as object or as a subject set) will be removed. <strong>This cannot be undone.</strong>
+            </p>
+            <div className="modal-tuple-list">
+              {confirmDelete.tuples.slice(0, 50).map((t, i) => (
+                <div key={i} className="modal-tuple">
+                  {t.namespace}:{t.object}#{t.relation} @{" "}
+                  {t.subject_id
+                    ? t.subject_id
+                    : t.subject_set
+                      ? `${t.subject_set.namespace}:${t.subject_set.object}${t.subject_set.relation ? `#${t.subject_set.relation}` : ""}`
+                      : "?"}
+                </div>
+              ))}
+              {confirmDelete.tuples.length > 50 && (
+                <div className="modal-tuple-more">
+                  …and {confirmDelete.tuples.length - 50} more
+                </div>
+              )}
+            </div>
+            <div className="modal-actions">
+              <button
+                className="btn-secondary"
+                disabled={deleting}
+                onClick={() => setConfirmDelete(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-danger"
+                disabled={deleting}
+                onClick={handleConfirmDelete}
+              >
+                {deleting ? "Deleting…" : `Delete ${confirmDelete.tuples.length}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

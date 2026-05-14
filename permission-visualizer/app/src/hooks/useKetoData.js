@@ -22,7 +22,32 @@ export function useKetoData(exampleMeta) {
   const [loadingPermissions, setLoadingPermissions] = useState(false);
   const abortRef = useRef(null);
 
-  // Fetch namespaces + tuples when example changes
+  // Refetch namespaces + tuples (used both on mount/example change and after writes).
+  const refetch = useCallback(async () => {
+    if (!exampleMeta) {
+      setTuples([]);
+      setSubjects({});
+      setNamespaces([]);
+      setError(null);
+      setPermissionResults([]);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const ns = await fetchNamespaces();
+      setNamespaces(ns);
+      const allTuples = await fetchAllTuples(ns);
+      setTuples(allTuples);
+      setSubjects(deriveSubjects(allTuples));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [exampleMeta]);
+
+  // Fetch on example change.
   useEffect(() => {
     if (!exampleMeta) {
       setTuples([]);
@@ -32,7 +57,6 @@ export function useKetoData(exampleMeta) {
       setPermissionResults([]);
       return;
     }
-
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -43,7 +67,6 @@ export function useKetoData(exampleMeta) {
         const ns = await fetchNamespaces();
         if (cancelled) return;
         setNamespaces(ns);
-
         const allTuples = await fetchAllTuples(ns);
         if (cancelled) return;
         setTuples(allTuples);
@@ -135,5 +158,6 @@ export function useKetoData(exampleMeta) {
     permissionResults,
     loadingPermissions,
     checkUserPermissions,
+    refetch,
   };
 }

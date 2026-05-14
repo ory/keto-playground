@@ -104,6 +104,51 @@ export async function checkPermissions(checks) {
 }
 
 /**
+ * Delete a single relation tuple by exact match.
+ * Hits Keto's admin API at /admin/relation-tuples (proxied with PAT auth).
+ * The PAT must have write/delete scope.
+ */
+export async function deleteRelationTuple(tuple) {
+  const params = new URLSearchParams({
+    namespace: tuple.namespace,
+    object: tuple.object,
+    relation: tuple.relation,
+  });
+  if (tuple.subject_id) {
+    params.set("subject_id", tuple.subject_id);
+  } else if (tuple.subject_set) {
+    params.set("subject_set.namespace", tuple.subject_set.namespace);
+    params.set("subject_set.object", tuple.subject_set.object);
+    params.set("subject_set.relation", tuple.subject_set.relation || "");
+  }
+  const res = await fetch(`${API}/admin/relation-tuples?${params}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Delete failed (${res.status}): ${text || res.statusText}`);
+  }
+}
+
+/**
+ * Delete an array of tuples in batches. Returns { deleted, errors }.
+ */
+export async function deleteRelationTuples(tuples) {
+  const errors = [];
+  let deleted = 0;
+  const BATCH_SIZE = 5;
+  for (let i = 0; i < tuples.length; i += BATCH_SIZE) {
+    const batch = tuples.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(batch.map((t) => deleteRelationTuple(t)));
+    for (let j = 0; j < results.length; j++) {
+      if (results[j].status === "fulfilled") deleted++;
+      else errors.push({ tuple: batch[j], reason: results[j].reason?.message || String(results[j].reason) });
+    }
+  }
+  return { deleted, errors };
+}
+
+/**
  * Derive the list of users from tuples.
  * A "user" is any subject_id that appears in the tuples.
  * Kept for back-compat; new code should use deriveSubjects.

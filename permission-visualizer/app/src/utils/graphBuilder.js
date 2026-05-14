@@ -31,9 +31,12 @@ const NAMESPACE_COLORS = {
  *   { kind:'set', namespace, object, relation }. A bare string is treated as a direct id.
  * @param {Array} permissionResults - Array of { namespace, object, permission, allowed }
  * @param {Object} [colorOverrides] - Optional namespace->color map
+ * @param {number} [maxDepth=4] - Max hops to traverse from the subject
+ * @param {object} [branchFilter] - Optional { namespace, object, relation } to narrow
+ *   the first hop to a single tuple, so the graph shows only one branch from the subject.
  * @returns {{ nodes: Array, edges: Array }}
  */
-export function buildGraph(tuples, subject, permissionResults = [], colorOverrides = {}) {
+export function buildGraph(tuples, subject, permissionResults = [], colorOverrides = {}, maxDepth = 4, branchFilter = null) {
   const subj = normalizeSubject(subject);
   if (!subj) return { nodes: [], edges: [] };
 
@@ -58,6 +61,18 @@ export function buildGraph(tuples, subject, permissionResults = [], colorOverrid
         t.subject_set.object === subj.object &&
         (t.subject_set.relation || "") === (subj.relation || "")
     );
+  }
+
+  // Narrow to a single branch if requested. If branchFilter has a relation, match exactly;
+  // otherwise narrow to the node (any relation tying the subject to that node).
+  if (branchFilter) {
+    firstPassTuples = firstPassTuples.filter((t) => {
+      if (t.namespace !== branchFilter.namespace || t.object !== branchFilter.object) return false;
+      if (branchFilter.relation !== undefined && branchFilter.relation !== null) {
+        return t.relation === branchFilter.relation;
+      }
+      return true;
+    });
   }
 
   // Build a set of objects/namespaces connected to the subject
@@ -87,7 +102,7 @@ export function buildGraph(tuples, subject, permissionResults = [], colorOverrid
   let changed = true;
   let depth = 0;
 
-  while (changed && depth < 4) {
+  while (changed && depth < maxDepth) {
     changed = false;
     depth++;
     const currentEntities = new Set(intermediateEntities);
@@ -97,6 +112,8 @@ export function buildGraph(tuples, subject, permissionResults = [], colorOverrid
         const ssId = `${t.subject_set.namespace}:${t.subject_set.object}`;
         if (currentEntities.has(ssId)) {
           const targetId = `${t.namespace}:${t.object}`;
+          // When a branch filter is active, don't fan out back through the central subject.
+          if (branchFilter && targetId === centerId) continue;
           if (!intermediateEntities.has(targetId)) {
             intermediateEntities.add(targetId);
             changed = true;
@@ -130,6 +147,9 @@ export function buildGraph(tuples, subject, permissionResults = [], colorOverrid
           // Don't add unrelated direct subjects to the graph
         } else if (t.subject_set) {
           const ssId = `${t.subject_set.namespace}:${t.subject_set.object}`;
+          // When a branch filter is active, don't loop back through the central subject —
+          // doing so would expose tuples for all other branches in the next iteration.
+          if (branchFilter && ssId === centerId) continue;
           addNode(nodeMap, t.subject_set.namespace, t.subject_set.object, false, colorOverrides);
           if (!intermediateEntities.has(ssId)) {
             intermediateEntities.add(ssId);
@@ -270,6 +290,7 @@ export function getCytoscapeStylesheet() {
         "border-color": "data(color)",
         "background-opacity": 0.2,
         "text-wrap": "none",
+        "min-zoomed-font-size": 8,
       },
     },
     {
@@ -299,6 +320,7 @@ export function getCytoscapeStylesheet() {
         width: 1.5,
         "arrow-scale": 0.8,
         opacity: 0.7,
+        "min-zoomed-font-size": 10,
       },
     },
     {
