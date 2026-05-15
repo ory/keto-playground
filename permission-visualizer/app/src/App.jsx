@@ -186,25 +186,6 @@ function App() {
     return Array.from(map.values());
   }, [permissionResults]);
 
-  // Cytoscape layout — dagre top-down: subject at top, access flows downward
-  // through roles/teams to resources.
-  const layout = useMemo(
-    () => ({
-      name: "dagre",
-      rankDir: "TB",
-      nodeSep: 50,
-      rankSep: 110,
-      edgeSep: 25,
-      ranker: "network-simplex",
-      acyclicer: "greedy",
-      fit: true,
-      padding: 40,
-      animate: true,
-      animationDuration: 300,
-    }),
-    []
-  );
-
   const stylesheet = useMemo(() => getCytoscapeStylesheet(), []);
 
   const handleCyInit = useCallback((cy) => {
@@ -282,6 +263,86 @@ function App() {
   const elements = useMemo(() => {
     if (!graphData) return [];
     return [...graphData.nodes, ...graphData.edges];
+  }, [graphData]);
+
+  // Cytoscape layout — BFS-tier preset: subject at top, then each ring of BFS
+  // distance gets its own horizontal row. Within each row, nodes are sorted by
+  // the average x of their parents (barycenter) to reduce edge crossings.
+  const layout = useMemo(() => {
+    const fallback = { name: "preset", fit: true, padding: 40 };
+    if (!graphData || graphData.nodes.length === 0) return fallback;
+
+    const centerNode = graphData.nodes.find((n) => n.data.isSelectedUser);
+    if (!centerNode) return fallback;
+    const centerId = centerNode.data.id;
+
+    const NODE_SEP = 200;
+    const RANK_SEP = 220;
+
+    const adjacency = new Map();
+    for (const e of graphData.edges) {
+      const s = e.data.source;
+      const t = e.data.target;
+      if (!adjacency.has(s)) adjacency.set(s, []);
+      if (!adjacency.has(t)) adjacency.set(t, []);
+      adjacency.get(s).push(t);
+      adjacency.get(t).push(s);
+    }
+
+    const level = new Map([[centerId, 0]]);
+    const bfsQueue = [centerId];
+    while (bfsQueue.length) {
+      const cur = bfsQueue.shift();
+      const curLevel = level.get(cur);
+      for (const next of adjacency.get(cur) || []) {
+        if (!level.has(next)) {
+          level.set(next, curLevel + 1);
+          bfsQueue.push(next);
+        }
+      }
+    }
+
+    const tiers = new Map();
+    for (const node of graphData.nodes) {
+      const lvl = level.get(node.data.id) ?? 999;
+      if (!tiers.has(lvl)) tiers.set(lvl, []);
+      tiers.get(lvl).push(node.data.id);
+    }
+
+    const positions = {};
+    const placedX = new Map([[centerId, 0]]);
+    positions[centerId] = { x: 0, y: 0 };
+
+    const maxLevel = Math.max(...tiers.keys());
+    for (let lvl = 1; lvl <= maxLevel; lvl++) {
+      const ids = tiers.get(lvl) || [];
+      const withBary = ids.map((id) => {
+        const parents = (adjacency.get(id) || []).filter(
+          (n) => level.get(n) === lvl - 1 && placedX.has(n),
+        );
+        const avgX = parents.length
+          ? parents.reduce((a, p) => a + placedX.get(p), 0) / parents.length
+          : 0;
+        return { id, avgX };
+      });
+      withBary.sort((a, b) => a.avgX - b.avgX);
+      const count = withBary.length;
+      withBary.forEach(({ id }, i) => {
+        const x = (i - (count - 1) / 2) * NODE_SEP;
+        const y = lvl * RANK_SEP;
+        positions[id] = { x, y };
+        placedX.set(id, x);
+      });
+    }
+
+    return {
+      name: "preset",
+      positions,
+      fit: true,
+      padding: 40,
+      animate: true,
+      animationDuration: 300,
+    };
   }, [graphData]);
 
   // Clear stale node selection if the node is no longer in the graph (e.g., after refetch).

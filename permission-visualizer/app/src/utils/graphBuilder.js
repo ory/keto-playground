@@ -204,11 +204,23 @@ export function buildGraph(tuples, subject, permissionResults = [], colorOverrid
   }
 
   // Hide other entities in the subject's namespace — only the chosen subject is shown.
+  // When a branch filter is active, also hide other entities in the branch's namespace —
+  // only the selected branch node should appear at that tier.
   const subjectNamespace =
     subj.kind === "id" ? subj.namespace || "User" : subj.namespace;
+  const branchNodeId = branchFilter
+    ? `${branchFilter.namespace}:${branchFilter.object}`
+    : null;
   const hiddenIds = new Set();
   for (const [id, node] of nodeMap) {
     if (id !== centerId && node.data.namespace === subjectNamespace) {
+      hiddenIds.add(id);
+    }
+    if (
+      branchFilter &&
+      id !== branchNodeId &&
+      node.data.namespace === branchFilter.namespace
+    ) {
       hiddenIds.add(id);
     }
   }
