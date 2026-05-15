@@ -186,21 +186,17 @@ function App() {
     return Array.from(map.values());
   }, [permissionResults]);
 
-  // Cytoscape layout — concentric: subject in the middle, leaves bucketed into 4 outer rings
-  // (deterministic by id hash) so 100+ nodes don't all pile onto one ring.
+  // Cytoscape layout — dagre top-down: subject at top, access flows downward
+  // through roles/teams to resources.
   const layout = useMemo(
     () => ({
-      name: "concentric",
-      concentric: (n) => {
-        if (n.data("isSelectedUser")) return 1000;
-        const id = n.data("id") || "";
-        let h = 0;
-        for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-        return 100 - (h % 4) * 15; // 100, 85, 70, 55 — four outer rings
-      },
-      levelWidth: () => 1,
-      minNodeSpacing: 60,
-      spacingFactor: 1.4,
+      name: "dagre",
+      rankDir: "TB",
+      nodeSep: 50,
+      rankSep: 110,
+      edgeSep: 25,
+      ranker: "network-simplex",
+      acyclicer: "greedy",
       fit: true,
       padding: 40,
       animate: true,

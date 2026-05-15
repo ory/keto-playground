@@ -203,8 +203,49 @@ export function buildGraph(tuples, subject, permissionResults = [], colorOverrid
     }
   }
 
+  // Hide other entities in the subject's namespace — only the chosen subject is shown.
+  const subjectNamespace =
+    subj.kind === "id" ? subj.namespace || "User" : subj.namespace;
+  const hiddenIds = new Set();
+  for (const [id, node] of nodeMap) {
+    if (id !== centerId && node.data.namespace === subjectNamespace) {
+      hiddenIds.add(id);
+    }
+  }
+  for (const id of hiddenIds) nodeMap.delete(id);
+  const visibleEdges = edges.filter(
+    (e) => !hiddenIds.has(e.data.source) && !hiddenIds.has(e.data.target),
+  );
+
+  // Drop nodes left orphaned by the same-namespace filter — anything no longer
+  // reachable from the center via the remaining edges.
+  const adjacency = new Map();
+  for (const e of visibleEdges) {
+    if (!adjacency.has(e.data.source)) adjacency.set(e.data.source, []);
+    if (!adjacency.has(e.data.target)) adjacency.set(e.data.target, []);
+    adjacency.get(e.data.source).push(e.data.target);
+    adjacency.get(e.data.target).push(e.data.source);
+  }
+  const reachable = new Set([centerId]);
+  const queue = [centerId];
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const next of adjacency.get(cur) || []) {
+      if (!reachable.has(next)) {
+        reachable.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  for (const id of Array.from(nodeMap.keys())) {
+    if (!reachable.has(id)) nodeMap.delete(id);
+  }
+  const connectedEdges = visibleEdges.filter(
+    (e) => reachable.has(e.data.source) && reachable.has(e.data.target),
+  );
+
   const nodes = Array.from(nodeMap.values());
-  return { nodes, edges };
+  return { nodes, edges: connectedEdges };
 }
 
 function normalizeSubject(subject) {
