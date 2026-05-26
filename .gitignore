@@ -24,3 +24,5 @@ dist-ssr
 *.sw?
 permission-visualizer/.env
 PROXY-AND-ORY-SETUP.md
+exampletuple.ts
+example-namespace.ts
