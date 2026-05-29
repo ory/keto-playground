@@ -40,6 +40,7 @@ function App() {
   const [selectedSubjectNs, setSelectedSubjectNs] = useState("");
   const [selectedSubjectKey, setSelectedSubjectKey] = useState("");
   const [selectedBranchKey, setSelectedBranchKey] = useState("");
+  const [scopeToClass, setScopeToClass] = useState(true);
   const [customTuples, setCustomTuples] = useState([]);
   const [deletedTupleKeys, setDeletedTupleKeys] = useState(new Set());
   const [selectedNodeId, setSelectedNodeId] = useState(null);
@@ -190,6 +191,7 @@ function App() {
 
   const handleCyInit = useCallback((cy) => {
     cyRef.current = cy;
+    if (import.meta.env.DEV) window.cy = cy; // expose for console debugging (dev only)
     cy.on("layoutstop", () => {
       cy.fit(undefined, 40);
     });
@@ -254,11 +256,37 @@ function App() {
     return node ? { namespace: node.namespace, object: node.object, relation: null } : null;
   }, [selectedBranchKey, branchNodes]);
 
+  // All ClaudeClass member names referenced as subject sets — the set of "classes".
+  const claudeClassNames = useMemo(() => {
+    const names = new Set();
+    for (const t of effectiveTuples) {
+      if (t.subject_set && t.subject_set.namespace === "ClaudeClass") {
+        names.add(t.subject_set.object);
+      }
+    }
+    return names;
+  }, [effectiveTuples]);
+
+  // The selected subject's class, if it's a ClaudeClass subject set. Drives class scoping.
+  const selectedClass =
+    selectedSubject &&
+    selectedSubject.kind === "set" &&
+    selectedSubject.namespace === "ClaudeClass"
+      ? selectedSubject.object
+      : null;
+
+  // Class scope — hide resource objects suffixed with a different class. Only active
+  // when scoping is enabled and a ClaudeClass subject is selected.
+  const classScope = useMemo(() => {
+    if (!scopeToClass || !selectedClass) return null;
+    return { selectedClass, classNames: claudeClassNames };
+  }, [scopeToClass, selectedClass, claudeClassNames]);
+
   // Build graph elements from effective tuples + permission results
   const graphData = useMemo(() => {
     if (!selectedSubject || effectiveTuples.length === 0) return null;
-    return buildGraph(effectiveTuples, selectedSubject, permissionResults, namespaceColorMap, undefined, branchFilter);
-  }, [selectedSubject, effectiveTuples, permissionResults, namespaceColorMap, branchFilter]);
+    return buildGraph(effectiveTuples, selectedSubject, permissionResults, namespaceColorMap, undefined, branchFilter, classScope);
+  }, [selectedSubject, effectiveTuples, permissionResults, namespaceColorMap, branchFilter, classScope]);
 
   const elements = useMemo(() => {
     if (!graphData) return [];
@@ -541,6 +569,20 @@ function App() {
                   ))}
                 </select>
               </div>
+              <div className="selector-group">
+                <label>Class scope</label>
+                <label className="checkbox-inline">
+                  <input
+                    type="checkbox"
+                    checked={scopeToClass}
+                    onChange={(e) => setScopeToClass(e.target.checked)}
+                    disabled={!selectedClass}
+                  />
+                  {selectedClass
+                    ? `Only ${selectedClass}`
+                    : "Select a class subject"}
+                </label>
+              </div>
             </>
           )}
           {loading && <div className="status-indicator loading">Fetching tuples...</div>}
@@ -711,7 +753,7 @@ function App() {
               </div>
             ) : elements.length > 0 ? (
               <CytoscapeComponent
-                key={`${mode}-${selectedExample}-${selectedSubjectNs}-${selectedSubjectKey}-${selectedBranchKey}`}
+                key={`${mode}-${selectedExample}-${selectedSubjectNs}-${selectedSubjectKey}-${selectedBranchKey}-${scopeToClass}`}
                 elements={elements}
                 stylesheet={stylesheet}
                 layout={layout}

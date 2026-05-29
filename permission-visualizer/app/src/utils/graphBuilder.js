@@ -34,9 +34,12 @@ const NAMESPACE_COLORS = {
  * @param {number} [maxDepth=4] - Max hops to traverse from the subject
  * @param {object} [branchFilter] - Optional { namespace, object, relation } to narrow
  *   the first hop to a single tuple, so the graph shows only one branch from the subject.
+ * @param {object} [classScope] - Optional { selectedClass, classNames } to hide resource
+ *   objects belonging to a different ClaudeClass. Object names follow a `<base>/<class>`
+ *   convention; nodes whose `/`-suffix is a known class other than selectedClass are dropped.
  * @returns {{ nodes: Array, edges: Array }}
  */
-export function buildGraph(tuples, subject, permissionResults = [], colorOverrides = {}, maxDepth = 4, branchFilter = null) {
+export function buildGraph(tuples, subject, permissionResults = [], colorOverrides = {}, maxDepth = 4, branchFilter = null, classScope = null) {
   const subj = normalizeSubject(subject);
   if (!subj) return { nodes: [], edges: [] };
 
@@ -211,6 +214,15 @@ export function buildGraph(tuples, subject, permissionResults = [], colorOverrid
   const branchNodeId = branchFilter
     ? `${branchFilter.namespace}:${branchFilter.object}`
     : null;
+  // Class scoping: hide resource objects suffixed with a class other than the selected one.
+  const otherClasses =
+    classScope && classScope.selectedClass
+      ? new Set(
+          Array.from(classScope.classNames || []).filter(
+            (c) => c !== classScope.selectedClass,
+          ),
+        )
+      : null;
   const hiddenIds = new Set();
   for (const [id, node] of nodeMap) {
     if (id !== centerId && node.data.namespace === subjectNamespace) {
@@ -222,6 +234,13 @@ export function buildGraph(tuples, subject, permissionResults = [], colorOverrid
       node.data.namespace === branchFilter.namespace
     ) {
       hiddenIds.add(id);
+    }
+    if (otherClasses && id !== centerId) {
+      const object = id.slice(id.indexOf(":") + 1);
+      const slash = object.lastIndexOf("/");
+      if (slash !== -1 && otherClasses.has(object.slice(slash + 1))) {
+        hiddenIds.add(id);
+      }
     }
   }
   for (const id of hiddenIds) nodeMap.delete(id);

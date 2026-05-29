@@ -95,6 +95,24 @@
   min-width: 200px;
 }
 
+.checkbox-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.checkbox-inline input {
+  cursor: pointer;
+}
+
+.checkbox-inline input:disabled {
+  cursor: not-allowed;
+}
+
 .selector-group select:hover {
   border-color: var(--accent);
 }
