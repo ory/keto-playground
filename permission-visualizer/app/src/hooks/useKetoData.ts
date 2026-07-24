@@ -1,32 +1,55 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import type { Relationship } from "@ory/client-fetch";
+
 import {
   fetchNamespaces,
   fetchAllTuples,
   checkPermissions,
-  deriveUsers,
+  deriveSubjects,
 } from "../api/ketoClient";
+import type {
+  PermissionCheck,
+  PermissionResult,
+  SubjectRef,
+} from "../api/ketoClient";
+import type { ExampleMeta } from "../data/examples";
+
+/** The common shape returned by both the live and the offline data hook. */
+export interface KetoData {
+  tuples: Relationship[];
+  subjects: SubjectRef[];
+  namespaces: string[];
+  loading: boolean;
+  error: string | null;
+  permissionResults: PermissionResult[];
+  loadingPermissions: boolean;
+  checkSubjectPermissions: (subject: SubjectRef) => void;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 /**
  * React hook that fetches live Keto data (namespaces, tuples, permission checks).
  *
- * @param {object|null} exampleMeta - The selected example metadata (permissions, etc.)
- * @returns {{ tuples, users, namespaces, loading, error, permissionResults, loadingPermissions, checkUserPermissions }}
+ * @param exampleMeta - The selected example metadata (permissions, etc.)
  */
-export function useKetoData(exampleMeta) {
-  const [tuples, setTuples] = useState([]);
-  const [users, setUsers] = useState([]);
-  const [namespaces, setNamespaces] = useState([]);
+export function useKetoData(exampleMeta: ExampleMeta | null): KetoData {
+  const [tuples, setTuples] = useState<Relationship[]>([]);
+  const [subjects, setSubjects] = useState<SubjectRef[]>([]);
+  const [namespaces, setNamespaces] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [permissionResults, setPermissionResults] = useState([]);
+  const [error, setError] = useState<string | null>(null);
+  const [permissionResults, setPermissionResults] = useState<PermissionResult[]>([]);
   const [loadingPermissions, setLoadingPermissions] = useState(false);
-  const abortRef = useRef(null);
+  const abortRef = useRef<{ cancelled: boolean } | null>(null);
 
   // Fetch namespaces + tuples when example changes
   useEffect(() => {
     if (!exampleMeta) {
       setTuples([]);
-      setUsers([]);
+      setSubjects([]);
       setNamespaces([]);
       setError(null);
       setPermissionResults([]);
@@ -47,9 +70,9 @@ export function useKetoData(exampleMeta) {
         const allTuples = await fetchAllTuples(ns);
         if (cancelled) return;
         setTuples(allTuples);
-        setUsers(deriveUsers(allTuples));
+        setSubjects(deriveSubjects(allTuples));
       } catch (err) {
-        if (!cancelled) setError(err.message);
+        if (!cancelled) setError(errorMessage(err));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -60,10 +83,10 @@ export function useKetoData(exampleMeta) {
     };
   }, [exampleMeta]);
 
-  // Check permissions for a specific user
-  const checkUserPermissions = useCallback(
-    async (userId) => {
-      if (!exampleMeta || !userId || tuples.length === 0) {
+  // Check permissions for a specific subject
+  const checkSubjectPermissions = useCallback(
+    async (subject: SubjectRef) => {
+      if (!exampleMeta || tuples.length === 0) {
         setPermissionResults([]);
         return;
       }
@@ -78,9 +101,9 @@ export function useKetoData(exampleMeta) {
       try {
         // Build the check matrix: for each permission def, for each unique object
         // in that namespace, for each permission name
-        const checks = [];
+        const checks: PermissionCheck[] = [];
         for (const permDef of exampleMeta.permissions) {
-          const objects = new Set();
+          const objects = new Set<string>();
           for (const t of tuples) {
             if (t.namespace === permDef.namespace) {
               objects.add(t.object);
@@ -92,7 +115,7 @@ export function useKetoData(exampleMeta) {
                 namespace: permDef.namespace,
                 object: obj,
                 permission: perm,
-                subject_id: userId,
+                subject,
               });
             }
           }
@@ -104,7 +127,7 @@ export function useKetoData(exampleMeta) {
         }
       } catch (err) {
         if (!thisCheck.cancelled) {
-          setError(err.message);
+          setError(errorMessage(err));
         }
       } finally {
         if (!thisCheck.cancelled) {
@@ -112,17 +135,17 @@ export function useKetoData(exampleMeta) {
         }
       }
     },
-    [exampleMeta, tuples]
+    [exampleMeta, tuples],
   );
 
   return {
     tuples,
-    users,
+    subjects,
     namespaces,
     loading,
     error,
     permissionResults,
     loadingPermissions,
-    checkUserPermissions,
+    checkSubjectPermissions,
   };
 }

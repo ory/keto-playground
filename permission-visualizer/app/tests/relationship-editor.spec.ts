@@ -51,7 +51,7 @@ test.describe("Relationship Editor (offline mode)", () => {
     await expect(page.locator(".rel-editor-body")).toBeVisible();
 
     const countText = await page.locator(".rel-count").textContent();
-    const initialCount = parseInt(countText.match(/\d+/)[0]);
+    const initialCount = parseInt(countText!.match(/\d+/)![0]);
 
     await page.locator(".rel-delete-btn").first().click();
 
@@ -66,7 +66,7 @@ test.describe("Relationship Editor (offline mode)", () => {
     await expect(page.locator(".rel-editor-body")).toBeVisible();
 
     const countText = await page.locator(".rel-count").textContent();
-    const initialCount = parseInt(countText.match(/\d+/)[0]);
+    const initialCount = parseInt(countText!.match(/\d+/)![0]);
 
     await page.locator("button", { hasText: "+ Add Tuple" }).click();
     await expect(page.locator(".rel-add-form")).toBeVisible();
@@ -175,7 +175,7 @@ test.describe("Relationship Editor (offline mode)", () => {
     await page.locator(".rel-toggle-btn").click();
 
     const countText = await page.locator(".rel-count").textContent();
-    const initialCount = parseInt(countText.match(/\d+/)[0]);
+    const initialCount = parseInt(countText!.match(/\d+/)![0]);
 
     // Delete a tuple
     await page.locator(".rel-delete-btn").first().click();
@@ -220,10 +220,10 @@ test.describe("Relationship Editor (offline mode)", () => {
     const editRow = page.locator(".rel-row-editing");
     await expect(editRow).toBeVisible();
     // Namespace select should have original value
-    await expect(editRow.locator("select.rel-input-cell")).toHaveValue(namespace.trim());
+    await expect(editRow.locator("select.rel-input-cell")).toHaveValue(namespace!.trim());
     // Object input should have original value
     await expect(editRow.locator("input.rel-input-cell").first()).toHaveValue(
-      object.trim()
+      object!.trim()
     );
     // Save and cancel buttons should be visible
     await expect(page.locator(".rel-save-btn")).toBeVisible();
@@ -261,8 +261,6 @@ test.describe("Relationship Editor (offline mode)", () => {
     await page.locator(".rel-toggle-btn").click();
 
     const firstRow = page.locator(".rel-row").first();
-    const originalObject = await firstRow.locator("td").nth(1).textContent();
-
     await firstRow.hover();
     await firstRow.locator(".rel-edit-btn").click();
 

@@ -31,7 +31,7 @@ In **offline mode**, a **Relationships** panel at the bottom of the graph lets y
 - **Expand** the panel to see all relation tuples in a scrollable table
 - **Delete** any tuple — the graph updates immediately
 - **Edit** any tuple inline: hover a row to reveal the ✏ button, which turns the row into editable inputs; press Enter to save or Escape to cancel. Editing a base tuple saves it as a custom row (marked with a blue border)
-- **Subject format** in the edit field: plain `alice` for a direct subject ID, or `Namespace:object` / `Namespace:object#relation` for a subject set
+- **Subject format** in the edit field: plain `alice` for a direct subject ID (deprecated — prefer namespaced subject sets), or `Namespace:object` / `Namespace:object#relation` for a subject set
 - **Add new tuples** via a form: pick namespace, object, relation, and a subject (User ID or Subject Set)
 - Newly added `subject_id` values appear in the user dropdown straight away
 - An **"edited"** badge marks when changes are active
@@ -39,7 +39,7 @@ In **offline mode**, a **Relationships** panel at the bottom of the graph lets y
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22+ (the Docker image builds on Node 24)
 - An Ory Network project with OPL and tuples loaded (optional — the app works offline with bundled examples)
 
 ## Quick Start
@@ -104,7 +104,7 @@ Ory Network API (ORY_SDK_URL)
 
 1. **Fetch namespaces** — gets the list of entity types from the current OPL
 2. **Fetch all tuples** — paginated fetch across all namespaces
-3. **Derive users** — extracts all `subject_id` values from tuples
+3. **Derive subjects** — collects namespaced subject sets (`User:alice`) plus legacy `subject_id` values from tuples
 4. **Build graph** — when a user is selected, traces their connections through the tuple graph
 5. **Check permissions** — runs permission checks for all relevant resources and displays ALLOWED/DENIED badges
 
@@ -127,13 +127,13 @@ All 7 examples live in `permission-visualizer/examples/` and are available in th
 
 | Use Case            | Interesting Users to Try                                                                    |
 | ------------------- | ------------------------------------------------------------------------------------------- |
-| RBAC App Access     | `alice` (admin — all access), `eve` (viewer — limited)                                      |
-| RBAC Bank Accounts  | `john-smith` (owner), `james` (teller), `kevin` (branch_admin)                              |
-| RAG Document Access | `alice` (owner + team), `oscar` (no access)                                                 |
-| B2B Hierarchy       | `ceo-pat` (sees everything), `mgr-retail-lisa` (one LOB), `rep-saas-yara` (one customer)    |
-| SaaS Feature Gating | `alice` (enterprise), `eve` (free tier)                                                     |
-| Healthcare Records  | `dr-jones` (multi-patient), `dr-garcia` (emergency access), `dr-specialist-lee` (consented) |
-| Content Publishing  | `writer-alice` (drafts), `editor-diana` (review), `publisher-frank` (publish)               |
+| RBAC App Access     | `User:alice` (admin — all access), `User:eve` (viewer — limited)                                      |
+| RBAC Bank Accounts  | `User:john-smith` (owner), `User:james` (teller), `User:kevin` (branch_admin)                              |
+| RAG Document Access | `User:alice` (owner + team), `User:oscar` (no access)                                                 |
+| B2B Hierarchy       | `User:ceo-pat` (sees everything), `User:mgr-retail-lisa` (one LOB), `User:rep-saas-yara` (one customer)    |
+| SaaS Feature Gating | `User:alice` (enterprise), `User:eve` (free tier)                                                     |
+| Healthcare Records  | `User:dr-jones` (multi-patient), `User:dr-garcia` (emergency access), `User:dr-specialist-lee` (consented) |
+| Content Publishing  | `User:writer-alice` (drafts), `User:editor-diana` (review), `User:publisher-frank` (publish)               |
 
 ## Makefile Targets
 
@@ -151,7 +151,7 @@ Run all targets from `permission-visualizer/`:
 
 ## Tech Stack
 
-- [React](https://react.dev/) + [Vite](https://vite.dev/)
+- [React](https://react.dev/) + [TypeScript](https://www.typescriptlang.org/) + [Vite](https://vite.dev/)
 - [Cytoscape.js](https://js.cytoscape.org/) with [dagre layout](https://github.com/cytoscape/cytoscape.js-dagre) for directed graph rendering
 - Ory Keto REST API (via dev proxy or production server)
 
@@ -165,6 +165,6 @@ npx playwright test
 
 | Test file                           | Requires                                        |
 | ----------------------------------- | ----------------------------------------------- |
-| `tests/relationship-editor.spec.js` | Nothing — uses offline bundled data (18 tests)  |
-| `tests/schema-editor.spec.js`       | Nothing — uses offline bundled data (10 tests)  |
-| `tests/visualizer.spec.js`          | Live Ory tunnel on port 4000 (11 tests)         |
+| `tests/relationship-editor.spec.ts` | Nothing — uses offline bundled data (18 tests)  |
+| `tests/schema-editor.spec.ts`       | Nothing — uses offline bundled data (10 tests)  |
+| `tests/visualizer.spec.ts`          | Live Ory tunnel on port 4000 (11 tests)         |

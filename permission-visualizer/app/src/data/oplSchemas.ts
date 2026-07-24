@@ -7,7 +7,7 @@
  * offline playground without requiring file-system access at runtime.
  */
 
-const OPL_SCHEMAS = {
+const OPL_SCHEMAS: Record<string, string> = {
   "rbac-app-access": `import { Namespace, Context } from "@ory/keto-namespace-types"
 
 class User implements Namespace {}
