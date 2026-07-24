@@ -1,5 +1,9 @@
 import { useState } from "react";
 
+interface SchemaEditorProps {
+  defaultSchema: string;
+}
+
 /**
  * Collapsible OPL schema viewer/editor panel (offline mode only).
  *
@@ -10,7 +14,7 @@ import { useState } from "react";
  * Keyed on `selectedExample` in the parent so state resets automatically
  * when the example changes.
  */
-export function SchemaEditor({ defaultSchema }) {
+export function SchemaEditor({ defaultSchema }: SchemaEditorProps) {
   const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState(defaultSchema ?? "");
 

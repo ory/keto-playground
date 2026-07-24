@@ -126,7 +126,9 @@ test.describe("UI renders with live data", () => {
     // First, determine which example matches the currently loaded OPL
     const nsRes = await request.get("/api/namespaces");
     const nsData = await nsRes.json();
-    const liveNamespaces = new Set(nsData.namespaces.map((n) => n.name));
+    const liveNamespaces = new Set(
+      nsData.namespaces.map((n: { name: string }) => n.name),
+    );
 
     // Map namespaces to examples
     const exampleMap = {
@@ -139,7 +141,7 @@ test.describe("UI renders with live data", () => {
       "Content Publishing Workflow": ["Article", "Role"],
     };
 
-    let matchedExample = null;
+    let matchedExample: string | null = null;
     for (const [name, required] of Object.entries(exampleMap)) {
       if (required.every((ns) => liveNamespaces.has(ns))) {
         matchedExample = name;
@@ -152,7 +154,7 @@ test.describe("UI renders with live data", () => {
 
     await page.goto("/");
     const useCaseSelect = page.locator("select").first();
-    await useCaseSelect.selectOption({ label: matchedExample });
+    await useCaseSelect.selectOption({ label: matchedExample! });
 
     const userSelect = page.locator("select").nth(1);
     await expect(userSelect).toBeVisible({ timeout: 10_000 });

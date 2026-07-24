@@ -2,7 +2,21 @@
  * Example metadata — use case names, descriptions, permission definitions,
  * and namespace colors. Tuples and users are fetched live from Keto.
  */
-const EXAMPLES = {
+
+/** Which permissions to check for every object of a namespace. */
+export interface PermissionDef {
+  namespace: string;
+  permissions: string[];
+}
+
+export interface ExampleMeta {
+  name: string;
+  description: string;
+  permissions: PermissionDef[];
+  namespaceColors?: Record<string, string>;
+}
+
+const EXAMPLES: Record<string, ExampleMeta> = {
   "rbac-app-access": {
     name: "RBAC App Access",
     description:

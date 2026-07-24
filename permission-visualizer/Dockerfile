@@ -1,20 +1,20 @@
-FROM node:20-slim AS build
+FROM node:24-slim AS build
 WORKDIR /build
 
 COPY app/package.json app/package-lock.json ./
 RUN npm ci
 
-COPY app/index.html app/vite.config.js ./
+COPY app/index.html app/vite.config.ts app/tsconfig.json ./
 COPY app/src ./src
 COPY app/public ./public
 RUN npm run build
 
-FROM node:20-slim AS server-deps
+FROM node:24-slim AS server-deps
 WORKDIR /server
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-FROM gcr.io/distroless/nodejs20-debian12:nonroot
+FROM gcr.io/distroless/nodejs24-debian13:nonroot
 WORKDIR /app
 
 COPY --from=build /build/dist ./dist

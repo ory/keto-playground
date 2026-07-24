@@ -1,6 +1,8 @@
 import { Fragment, useState } from "react";
+import type { KeyboardEvent } from "react";
+import type { Relationship } from "@ory/client-fetch";
 
-function formatSubject(tuple) {
+function formatSubject(tuple: Relationship): string {
   if (tuple.subject_id) return tuple.subject_id;
   if (tuple.subject_set) {
     const { namespace, object, relation } = tuple.subject_set;
@@ -15,7 +17,9 @@ function formatSubject(tuple) {
  * "Role:admin"         → { subject_set: { namespace:"Role", object:"admin", relation:"" } }
  * "Role:admin#members" → { subject_set: { namespace:"Role", object:"admin", relation:"members" } }
  */
-function parseSubject(str) {
+function parseSubject(
+  str: string,
+): Pick<Relationship, "subject_id" | "subject_set"> {
   const s = str.trim();
   const colonIdx = s.indexOf(":");
   if (colonIdx === -1) return { subject_id: s };
@@ -32,7 +36,27 @@ function parseSubject(str) {
   };
 }
 
-function validateAddForm(form) {
+interface AddForm {
+  namespace: string;
+  object: string;
+  relation: string;
+  subjectType: "user_id" | "subject_set";
+  subjectId: string;
+  ssNamespace: string;
+  ssObject: string;
+  ssRelation: string;
+}
+
+interface EditingRow {
+  type: "base" | "custom";
+  index: number;
+  namespace: string;
+  object: string;
+  relation: string;
+  subject: string;
+}
+
+function validateAddForm(form: AddForm): string | null {
   if (!form.namespace) return "Namespace is required";
   if (!form.object.trim()) return "Object is required";
   if (!/^[a-zA-Z0-9_:.-]+$/.test(form.object.trim())) return "Object contains invalid characters";
@@ -51,7 +75,12 @@ function validateAddForm(form) {
   return null;
 }
 
-function validateEditRow({ namespace, object, relation, subject }) {
+function validateEditRow({
+  namespace,
+  object,
+  relation,
+  subject,
+}: EditingRow): string | null {
   if (!namespace) return "Namespace is required";
   if (!object.trim()) return "Object is required";
   if (!/^[a-zA-Z0-9_:.-]+$/.test(object.trim())) return "Object contains invalid characters";
@@ -61,7 +90,7 @@ function validateEditRow({ namespace, object, relation, subject }) {
   return null;
 }
 
-function buildTuple(form) {
+function buildTuple(form: AddForm): Relationship {
   const base = {
     namespace: form.namespace,
     object: form.object.trim(),
@@ -80,7 +109,7 @@ function buildTuple(form) {
   };
 }
 
-const EMPTY_FORM = {
+const EMPTY_FORM: AddForm = {
   namespace: "",
   object: "",
   relation: "",
@@ -90,6 +119,18 @@ const EMPTY_FORM = {
   ssObject: "",
   ssRelation: "",
 };
+
+interface RelationshipEditorProps {
+  baseTuples: Relationship[];
+  customTuples: Relationship[];
+  deletedTupleKeys: Set<number>;
+  namespaces: string[];
+  onAddTuple: (tuple: Relationship) => void;
+  onDeleteBaseTuple: (index: number) => void;
+  onDeleteCustomTuple: (index: number) => void;
+  onUpdateCustomTuple: (index: number, tuple: Relationship) => void;
+  onReset: () => void;
+}
 
 export function RelationshipEditor({
   baseTuples,
@@ -101,14 +142,13 @@ export function RelationshipEditor({
   onDeleteCustomTuple,
   onUpdateCustomTuple,
   onReset,
-}) {
+}: RelationshipEditorProps) {
   const [expanded, setExpanded] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
-  const [form, setForm] = useState(EMPTY_FORM);
+  const [form, setForm] = useState<AddForm>(EMPTY_FORM);
   const [formError, setFormError] = useState("");
   // Inline edit state
-  const [editingRow, setEditingRow] = useState(null);
-  // null | { type:'base'|'custom', index, namespace, object, relation, subject }
+  const [editingRow, setEditingRow] = useState<EditingRow | null>(null);
   const [editError, setEditError] = useState("");
 
   const activeBaseCount = baseTuples.length - deletedTupleKeys.size;
@@ -117,12 +157,12 @@ export function RelationshipEditor({
 
   // ── Add form handlers ──────────────────────────────────────────────
 
-  function setField(key, value) {
+  function setField<K extends keyof AddForm>(key: K, value: AddForm[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
     setFormError("");
   }
 
-  function handleSubmit(e) {
+  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const error = validateAddForm(form);
     if (error) { setFormError(error); return; }
@@ -142,7 +182,7 @@ export function RelationshipEditor({
 
   // ── Inline edit handlers ───────────────────────────────────────────
 
-  function startEdit(type, index, tuple) {
+  function startEdit(type: EditingRow["type"], index: number, tuple: Relationship) {
     setShowAddForm(false);
     setEditingRow({
       type,
@@ -160,17 +200,21 @@ export function RelationshipEditor({
     setEditError("");
   }
 
-  function setEditField(key, value) {
-    setEditingRow((prev) => ({ ...prev, [key]: value }));
+  function setEditField(
+    key: "namespace" | "object" | "relation" | "subject",
+    value: string,
+  ) {
+    setEditingRow((prev) => (prev ? { ...prev, [key]: value } : prev));
     setEditError("");
   }
 
   function handleEditSave() {
+    if (!editingRow) return;
     const error = validateEditRow(editingRow);
     if (error) { setEditError(error); return; }
 
     const { type, index, namespace, object, relation, subject } = editingRow;
-    const newTuple = {
+    const newTuple: Relationship = {
       namespace,
       object: object.trim(),
       relation: relation.trim(),
@@ -190,19 +234,19 @@ export function RelationshipEditor({
 
   // ── Row renderers ──────────────────────────────────────────────────
 
-  const editKeyDown = (e) => {
+  const editKeyDown = (e: KeyboardEvent<HTMLInputElement | HTMLSelectElement>) => {
     if (e.key === "Enter") handleEditSave();
     if (e.key === "Escape") cancelEdit();
   };
 
-  function renderEditRow(key, rowClass) {
+  function renderEditRow(key: string, rowClass: string, row: EditingRow) {
     return (
       <Fragment key={key}>
         <tr className={`rel-row rel-row-editing ${rowClass}`}>
           <td>
             <select
               className="rel-input rel-input-cell"
-              value={editingRow.namespace}
+              value={row.namespace}
               onChange={(e) => setEditField("namespace", e.target.value)}
               onKeyDown={editKeyDown}
             >
@@ -214,7 +258,7 @@ export function RelationshipEditor({
           <td>
             <input
               className="rel-input rel-input-cell"
-              value={editingRow.object}
+              value={row.object}
               onChange={(e) => setEditField("object", e.target.value)}
               onKeyDown={editKeyDown}
             />
@@ -222,7 +266,7 @@ export function RelationshipEditor({
           <td>
             <input
               className="rel-input rel-input-cell"
-              value={editingRow.relation}
+              value={row.relation}
               onChange={(e) => setEditField("relation", e.target.value)}
               onKeyDown={editKeyDown}
             />
@@ -230,7 +274,7 @@ export function RelationshipEditor({
           <td>
             <input
               className="rel-input rel-input-cell rel-subject-input"
-              value={editingRow.subject}
+              value={row.subject}
               placeholder="user-id  or  NS:obj#rel"
               onChange={(e) => setEditField("subject", e.target.value)}
               onKeyDown={editKeyDown}
@@ -243,7 +287,7 @@ export function RelationshipEditor({
         </tr>
         {editError && (
           <tr className="rel-row-error">
-            <td colSpan="5" className="rel-edit-error">{editError}</td>
+            <td colSpan={5} className="rel-edit-error">{editError}</td>
           </tr>
         )}
       </Fragment>
@@ -381,8 +425,8 @@ export function RelationshipEditor({
               <tbody>
                 {baseTuples.map((t, i) => {
                   if (deletedTupleKeys.has(i)) return null;
-                  if (editingRow?.type === "base" && editingRow?.index === i) {
-                    return renderEditRow(`b-${i}`, "");
+                  if (editingRow?.type === "base" && editingRow.index === i) {
+                    return renderEditRow(`b-${i}`, "", editingRow);
                   }
                   return (
                     <tr key={`b-${i}`} className="rel-row">
@@ -410,8 +454,8 @@ export function RelationshipEditor({
                   );
                 })}
                 {customTuples.map((t, i) => {
-                  if (editingRow?.type === "custom" && editingRow?.index === i) {
-                    return renderEditRow(`c-${i}`, "rel-row-custom");
+                  if (editingRow?.type === "custom" && editingRow.index === i) {
+                    return renderEditRow(`c-${i}`, "rel-row-custom", editingRow);
                   }
                   return (
                     <tr key={`c-${i}`} className="rel-row rel-row-custom">
