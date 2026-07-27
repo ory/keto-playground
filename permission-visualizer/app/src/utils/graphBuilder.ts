@@ -282,6 +282,49 @@ function addNode(
 }
 
 /**
+ * Word-wrap for node labels: lines break at separators when they would
+ * exceed maxCharsPerLine, runs without a separator are hard-broken, and
+ * anything past maxLines is ellipsized. Labels that fit stay on one line.
+ */
+function wrapLabel(label, maxCharsPerLine = 18, maxLines = 2, separators = /([:])/) {
+  if (!label) return "";
+  maxCharsPerLine = Math.max(1, maxCharsPerLine);
+  maxLines = Math.max(1, maxLines);
+  if (label.length <= maxCharsPerLine) return label;
+  // Tokenize into chunks that each end with their trailing separator
+  const parts = label.split(separators);
+  const chunks = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    let chunk = parts[i] + (parts[i + 1] ?? "");
+    while (chunk.length > maxCharsPerLine) {
+      chunks.push(chunk.slice(0, maxCharsPerLine));
+      chunk = chunk.slice(maxCharsPerLine);
+    }
+    if (chunk) chunks.push(chunk);
+  }
+  const lines = [];
+  let current = "";
+  for (const chunk of chunks) {
+    if (current && current.length + chunk.length > maxCharsPerLine) {
+      lines.push(current);
+      current = chunk;
+    } else {
+      current += chunk;
+    }
+  }
+  if (current) lines.push(current);
+  if (lines.length > maxLines) {
+    // Fill the last line with raw text up to the limit instead of
+    // stopping at a separator boundary before ellipsizing
+    const kept = lines.slice(0, maxLines - 1);
+    const rest = label.slice(kept.join("").length);
+    kept.push(rest.slice(0, maxCharsPerLine - 1) + "…");
+    return kept.join("\n");
+  }
+  return lines.join("\n");
+}
+
+/**
  * Get the cytoscape stylesheet.
  */
 export function getCytoscapeStylesheet(): cytoscape.StylesheetStyle[] {
@@ -289,7 +332,7 @@ export function getCytoscapeStylesheet(): cytoscape.StylesheetStyle[] {
     {
       selector: "node",
       style: {
-        label: "data(label)",
+        label: (el) => wrapLabel(el.data("label")),
         "background-color": "data(color)",
         color: "#e1e4ed",
         "font-size": "11px",
@@ -300,8 +343,7 @@ export function getCytoscapeStylesheet(): cytoscape.StylesheetStyle[] {
         "border-width": 2,
         "border-color": "data(color)",
         "background-opacity": 0.2,
-        "text-wrap": "ellipsis",
-        "text-max-width": "80px",
+        "text-wrap": "wrap",
       },
     },
     {
