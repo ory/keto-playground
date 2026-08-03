@@ -286,7 +286,12 @@ function addNode(
  * exceed maxCharsPerLine, runs without a separator are hard-broken, and
  * anything past maxLines is ellipsized. Labels that fit stay on one line.
  */
-function wrapLabel(label, maxCharsPerLine = 18, maxLines = 2, separators = /([:])/) {
+function wrapLabel(
+  label: string,
+  maxCharsPerLine = 18,
+  maxLines = 2,
+  separators = /([:])/,
+) {
   if (!label) return "";
   maxCharsPerLine = Math.max(1, maxCharsPerLine);
   maxLines = Math.max(1, maxLines);
@@ -332,7 +337,7 @@ export function getCytoscapeStylesheet(): cytoscape.StylesheetStyle[] {
     {
       selector: "node",
       style: {
-        label: (el) => wrapLabel(el.data("label")),
+        label: (el: cytoscape.NodeSingular) => wrapLabel(el.data("label")),
         "background-color": "data(color)",
         color: "#e1e4ed",
         "font-size": "11px",
