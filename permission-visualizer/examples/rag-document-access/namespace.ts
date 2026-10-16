@@ -1,4 +1,4 @@
-import { Namespace, Context } from "@ory/keto-namespace-types"
+import { Namespace, SubjectSet, Context } from "@ory/keto-namespace-types"
 
 class User implements Namespace {}
 
@@ -12,7 +12,7 @@ class Document implements Namespace {
   related: {
     owner: User[]
     editors: User[]
-    viewers: (User | Team)[]
+    viewers: (User | SubjectSet<Team, "members">)[]
   }
 
   permits = {
