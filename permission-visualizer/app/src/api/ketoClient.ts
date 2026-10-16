@@ -19,12 +19,13 @@ const relationshipApi = new RelationshipApi(configuration);
 const permissionApi = new PermissionApi(configuration);
 
 /**
- * An entity that appears as the subject of tuples. The recommended form is a
- * namespaced subject set with an empty relation ("User:alice"); bare
+ * A subject of tuples. The recommended form is a namespaced subject set with an
+ * empty relation ("User:alice"); a subject set with a relation
+ * ("Group:eng#members") stands for everyone holding that relation; bare
  * subject_id strings are deprecated but still supported for legacy data.
  */
 export interface SubjectRef {
-  /** Display label and canonical key: "User:alice" for subject sets, the raw ID for legacy subject_ids. */
+  /** Display label and canonical key: "User:alice", "Group:eng#members", or the raw legacy subject_id. */
   label: string;
   subject_id?: string;
   subject_set?: SubjectSet;
@@ -47,7 +48,7 @@ export function subjectRefOf(t: Relationship): SubjectRef | null {
   return null;
 }
 
-/** Whether the tuple's subject is the given entity. */
+/** Whether the tuple's subject is exactly the given subject (including its relation). */
 export function subjectMatches(t: Relationship, ref: SubjectRef): boolean {
   if (ref.subject_id) return t.subject_id === ref.subject_id;
   const ss = ref.subject_set;
@@ -56,9 +57,12 @@ export function subjectMatches(t: Relationship, ref: SubjectRef): boolean {
     !!t.subject_set &&
     t.subject_set.namespace === ss.namespace &&
     t.subject_set.object === ss.object &&
-    !t.subject_set.relation
+    (t.subject_set.relation || "") === (ss.relation || "")
   );
 }
+
+/** Synthetic group under which legacy subject_ids are listed: they carry no namespace. */
+export const DIRECT_ID_NAMESPACE = "Direct ID";
 
 /** A single permission to verify for a subject. */
 export interface PermissionCheck {
@@ -173,16 +177,76 @@ export async function checkPermissions(
 }
 
 /**
- * Derive the list of entity subjects from tuples: namespaced subject sets
- * with an empty relation ("User:alice") plus legacy subject_ids.
+ * Derive every distinct subject from tuples: entity subject sets ("User:alice"),
+ * subject sets with a relation ("Group:eng#members") and legacy subject_ids.
  */
 export function deriveSubjects(tuples: Relationship[]): SubjectRef[] {
   const byLabel = new Map<string, SubjectRef>();
   for (const t of tuples) {
-    const ref = subjectRefOf(t);
+    const ref =
+      subjectRefOf(t) ??
+      (t.subject_set?.namespace && t.subject_set.object
+        ? {
+            label: `${t.subject_set.namespace}:${t.subject_set.object}#${t.subject_set.relation}`,
+            subject_set: t.subject_set,
+          }
+        : null);
     if (ref && !byLabel.has(ref.label)) {
       byLabel.set(ref.label, ref);
     }
   }
   return Array.from(byLabel.values()).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** Subjects grouped for the picker: by subject-set namespace, legacy IDs under DIRECT_ID_NAMESPACE. */
+export function groupSubjectsByNamespace(subjects: SubjectRef[]): Map<string, SubjectRef[]> {
+  const groups = new Map<string, SubjectRef[]>();
+  for (const s of subjects) {
+    const ns = s.subject_set?.namespace ?? DIRECT_ID_NAMESPACE;
+    groups.set(ns, [...(groups.get(ns) ?? []), s]);
+  }
+  return new Map([...groups].sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/**
+ * Delete one relation tuple by exact match (Keto admin API, proxied with the
+ * project API key; the key needs write access).
+ */
+export async function deleteRelationTuple(tuple: Relationship): Promise<void> {
+  // Every filter of the delete endpoint is optional: a missing field would widen the
+  // delete to many tuples, so require a fully specified tuple.
+  const hasSubject = tuple.subject_id || (tuple.subject_set?.namespace && tuple.subject_set.object);
+  if (!tuple.namespace || !tuple.object || !tuple.relation || !hasSubject) {
+    throw new Error("Refusing to delete an incompletely specified relation tuple");
+  }
+  await relationshipApi.deleteRelationships({
+    namespace: tuple.namespace,
+    object: tuple.object,
+    relation: tuple.relation,
+    ...(tuple.subject_id
+      ? { subjectId: tuple.subject_id }
+      : {
+          subjectSetNamespace: tuple.subject_set?.namespace,
+          subjectSetObject: tuple.subject_set?.object,
+          subjectSetRelation: tuple.subject_set?.relation ?? "",
+        }),
+  });
+}
+
+/** Delete tuples in small concurrent batches; failures are collected, not thrown. */
+export async function deleteRelationTuples(
+  tuples: Relationship[],
+): Promise<{ deleted: number; errors: { tuple: Relationship; reason: string }[] }> {
+  const errors: { tuple: Relationship; reason: string }[] = [];
+  let deleted = 0;
+  const BATCH_SIZE = 5;
+  for (let i = 0; i < tuples.length; i += BATCH_SIZE) {
+    const batch = tuples.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(batch.map(deleteRelationTuple));
+    results.forEach((r, j) => {
+      if (r.status === "fulfilled") deleted++;
+      else errors.push({ tuple: batch[j], reason: r.reason instanceof Error ? r.reason.message : String(r.reason) });
+    });
+  }
+  return { deleted, errors };
 }

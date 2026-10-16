@@ -64,6 +64,30 @@ export interface GraphData {
   edges: GraphEdge[];
 }
 
+/** Narrow the first hop to one branch: a node, or one relation to that node. */
+export interface BranchFilter {
+  namespace: string;
+  object: string;
+  relation?: string | null;
+}
+
+/**
+ * Hide resources that belong to another class. Object names follow a
+ * `<base>/<class>` convention; nodes whose suffix is a known class other than
+ * selectedClass are dropped.
+ */
+export interface ClassScope {
+  selectedClass: string;
+  classNames: Iterable<string>;
+}
+
+export interface BuildGraphOptions {
+  /** Max hops to traverse from the subject (default 4). */
+  maxDepth?: number;
+  branchFilter?: BranchFilter | null;
+  classScope?: ClassScope | null;
+}
+
 /**
  * The graph node identity of an entity subject. Legacy subject_ids carry no
  * namespace, so they are displayed under a synthetic "User" namespace.
@@ -99,12 +123,14 @@ function leafSubjectLabels(tuples: Relationship[]): Set<string> {
  * @param subject - The selected subject
  * @param permissionResults - Permission check verdicts to attach to nodes
  * @param colorOverrides - Optional namespace->color map (overrides defaults)
+ * @param options - Depth limit, single-branch view and class scoping
  */
 export function buildGraph(
   tuples: Relationship[],
   subject: SubjectRef,
   permissionResults: PermissionResult[] = [],
   colorOverrides: Record<string, string> = {},
+  { maxDepth = 4, branchFilter = null, classScope = null }: BuildGraphOptions = {},
 ): GraphData {
   const nodeMap = new Map<string, GraphNode>();
   const edges: GraphEdge[] = [];
@@ -115,8 +141,17 @@ export function buildGraph(
   const centerId = `${center.namespace}:${center.object}`;
   addNode(nodeMap, center.namespace, center.object, true, colorOverrides);
 
-  // First pass: find all tuples where this subject is the subject
-  const userTuples = tuples.filter((t) => subjectMatches(t, subject));
+  // First pass: find all tuples where this subject is the subject, optionally
+  // narrowed to a single branch (one node, or one relation to it)
+  const subjectRelation = subject.subject_set?.relation || "";
+  const userTuples = tuples.filter(
+    (t) =>
+      subjectMatches(t, subject) &&
+      (!branchFilter ||
+        (t.namespace === branchFilter.namespace &&
+          t.object === branchFilter.object &&
+          (branchFilter.relation == null || t.relation === branchFilter.relation))),
+  );
 
   // Build a set of objects/namespaces connected to the subject
   const connectedEntities = new Set<string>();
@@ -130,7 +165,7 @@ export function buildGraph(
         id: `e-${centerId}-${t.relation}-${targetId}`,
         source: centerId,
         target: targetId,
-        label: t.relation,
+        label: subjectRelation ? `${t.relation} (from #${subjectRelation})` : t.relation,
         relation: t.relation,
       },
     });
@@ -143,7 +178,7 @@ export function buildGraph(
   let changed = true;
   let depth = 0;
 
-  while (changed && depth < 4) {
+  while (changed && depth < maxDepth) {
     changed = false;
     depth++;
     const currentEntities = new Set(intermediateEntities);
@@ -153,6 +188,8 @@ export function buildGraph(
         const ssId = `${t.subject_set.namespace}:${t.subject_set.object}`;
         if (currentEntities.has(ssId)) {
           const targetId = `${t.namespace}:${t.object}`;
+          // With a branch filter, never fan back out through the subject itself.
+          if (branchFilter && targetId === centerId) continue;
           if (!intermediateEntities.has(targetId)) {
             intermediateEntities.add(targetId);
             changed = true;
@@ -198,6 +235,9 @@ export function buildGraph(
           // draw reverse edges back to the selected subject.
         } else if (t.subject_set) {
           const ssId = `${t.subject_set.namespace}:${t.subject_set.object}`;
+          // With a branch filter, looping back through the subject would expose
+          // every other branch on the next iteration.
+          if (branchFilter && ssId === centerId) continue;
           addNode(
             nodeMap,
             t.subject_set.namespace,
@@ -250,10 +290,72 @@ export function buildGraph(
   const centerNode = nodeMap.get(centerId);
   if (centerNode) {
     centerNode.data.isSelectedUser = true;
+    if (subjectRelation) centerNode.data.label = `${center.object} #${subjectRelation}`;
   }
 
-  const nodes = Array.from(nodeMap.values());
-  return { nodes, edges };
+  const hidden = hiddenNodeIds(nodeMap, centerId, center.namespace, branchFilter, classScope);
+  for (const id of hidden) nodeMap.delete(id);
+  const visibleEdges = edges.filter((e) => !hidden.has(e.data.source) && !hidden.has(e.data.target));
+
+  // Drop nodes the filters left disconnected from the subject.
+  const reachable = reachableFrom(centerId, visibleEdges);
+  for (const id of Array.from(nodeMap.keys())) {
+    if (!reachable.has(id)) nodeMap.delete(id);
+  }
+  return {
+    nodes: Array.from(nodeMap.values()),
+    edges: visibleEdges.filter((e) => reachable.has(e.data.source) && reachable.has(e.data.target)),
+  };
+}
+
+/**
+ * Nodes to hide: other entities in the subject's namespace (only the chosen
+ * subject is shown), other nodes in the branch filter's namespace, and
+ * resources scoped to a class other than the selected one.
+ */
+function hiddenNodeIds(
+  nodeMap: Map<string, GraphNode>,
+  centerId: string,
+  subjectNamespace: string,
+  branchFilter: BranchFilter | null,
+  classScope: ClassScope | null,
+): Set<string> {
+  const branchNodeId = branchFilter ? `${branchFilter.namespace}:${branchFilter.object}` : null;
+  const otherClasses = classScope?.selectedClass
+    ? new Set(Array.from(classScope.classNames).filter((c) => c !== classScope.selectedClass))
+    : null;
+  const hidden = new Set<string>();
+  for (const [id, node] of nodeMap) {
+    if (id === centerId) continue;
+    if (node.data.namespace === subjectNamespace) hidden.add(id);
+    if (branchFilter && id !== branchNodeId && node.data.namespace === branchFilter.namespace) hidden.add(id);
+    if (otherClasses) {
+      const object = id.slice(id.indexOf(":") + 1);
+      const slash = object.lastIndexOf("/");
+      if (slash !== -1 && otherClasses.has(object.slice(slash + 1))) hidden.add(id);
+    }
+  }
+  return hidden;
+}
+
+/** Node IDs connected to start through the edges, in either direction. */
+function reachableFrom(start: string, edges: GraphEdge[]): Set<string> {
+  const adjacency = new Map<string, string[]>();
+  for (const { data } of edges) {
+    adjacency.set(data.source, [...(adjacency.get(data.source) ?? []), data.target]);
+    adjacency.set(data.target, [...(adjacency.get(data.target) ?? []), data.source]);
+  }
+  const reachable = new Set([start]);
+  const queue = [start];
+  while (queue.length) {
+    for (const next of adjacency.get(queue.shift()!) ?? []) {
+      if (!reachable.has(next)) {
+        reachable.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return reachable;
 }
 
 function addNode(
@@ -349,6 +451,7 @@ export function getCytoscapeStylesheet(): cytoscape.StylesheetStyle[] {
         "border-color": "data(color)",
         "background-opacity": 0.2,
         "text-wrap": "wrap",
+        "min-zoomed-font-size": 8,
       },
     },
     {
@@ -378,6 +481,7 @@ export function getCytoscapeStylesheet(): cytoscape.StylesheetStyle[] {
         width: 1.5,
         "arrow-scale": 0.8,
         opacity: 0.7,
+        "min-zoomed-font-size": 10,
       },
     },
     {

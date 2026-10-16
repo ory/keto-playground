@@ -32,6 +32,7 @@ export function useOfflineData(exampleKey: string | null): KetoData {
   }, [tuples]);
 
   const checkSubjectPermissions = useCallback(() => {}, []);
+  const refetch = useCallback(async () => {}, []);
 
   return {
     tuples,
@@ -42,6 +43,7 @@ export function useOfflineData(exampleKey: string | null): KetoData {
     permissionResults: NO_PERMISSION_RESULTS,
     loadingPermissions: false,
     checkSubjectPermissions,
+    refetch,
   };
 }
 

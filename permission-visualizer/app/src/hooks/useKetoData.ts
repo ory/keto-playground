@@ -24,6 +24,8 @@ export interface KetoData {
   permissionResults: PermissionResult[];
   loadingPermissions: boolean;
   checkSubjectPermissions: (subject: SubjectRef) => void;
+  /** Reload namespaces and tuples, e.g. after deleting tuples. */
+  refetch: () => Promise<void>;
 }
 
 function errorMessage(err: unknown): string {
@@ -45,7 +47,32 @@ export function useKetoData(exampleMeta: ExampleMeta | null): KetoData {
   const [loadingPermissions, setLoadingPermissions] = useState(false);
   const abortRef = useRef<{ cancelled: boolean } | null>(null);
 
-  // Fetch namespaces + tuples when example changes
+  // Refetch namespaces + tuples (used both on mount/example change and after writes).
+  const refetch = useCallback(async () => {
+    if (!exampleMeta) {
+      setTuples([]);
+      setSubjects([]);
+      setNamespaces([]);
+      setError(null);
+      setPermissionResults([]);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const ns = await fetchNamespaces();
+      setNamespaces(ns);
+      const allTuples = await fetchAllTuples(ns);
+      setTuples(allTuples);
+      setSubjects(deriveSubjects(allTuples));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [exampleMeta]);
+
+  // Fetch on example change.
   useEffect(() => {
     if (!exampleMeta) {
       setTuples([]);
@@ -55,7 +82,6 @@ export function useKetoData(exampleMeta: ExampleMeta | null): KetoData {
       setPermissionResults([]);
       return;
     }
-
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -66,7 +92,6 @@ export function useKetoData(exampleMeta: ExampleMeta | null): KetoData {
         const ns = await fetchNamespaces();
         if (cancelled) return;
         setNamespaces(ns);
-
         const allTuples = await fetchAllTuples(ns);
         if (cancelled) return;
         setTuples(allTuples);
@@ -147,5 +172,6 @@ export function useKetoData(exampleMeta: ExampleMeta | null): KetoData {
     permissionResults,
     loadingPermissions,
     checkSubjectPermissions,
+    refetch,
   };
 }
