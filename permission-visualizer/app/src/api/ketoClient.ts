@@ -15,6 +15,8 @@ import {
 import type { Relationship, SubjectSet } from "@ory/client-fetch";
 
 const configuration = new Configuration({ basePath: "/api" });
+/** A permission check slower than this counts as failed instead of holding up the panel. */
+const CHECK_TIMEOUT_MS = 15_000;
 const relationshipApi = new RelationshipApi(configuration);
 const permissionApi = new PermissionApi(configuration);
 
@@ -80,7 +82,8 @@ export interface PermissionResult extends PermissionCheck {
 /** Fetch the list of namespaces from the current OPL deployment. */
 export async function fetchNamespaces(): Promise<string[]> {
   const { namespaces } = await relationshipApi.listRelationshipNamespaces();
-  return (namespaces ?? []).flatMap((n) => (n.name ? [n.name] : []));
+  // Sorted: Keto's order varies between calls, and legend colours follow it.
+  return (namespaces ?? []).flatMap((n) => (n.name ? [n.name] : [])).sort();
 }
 
 /**
@@ -128,16 +131,19 @@ export async function checkPermission(
   },
 ): Promise<boolean> {
   try {
-    const result = await permissionApi.postCheckPermission({
-      postCheckPermissionBody: {
-        namespace: request.namespace,
-        object: request.object,
-        relation: request.relation,
-        ...(request.subject.subject_id
-          ? { subject_id: request.subject.subject_id }
-          : { subject_set: request.subject.subject_set }),
+    const result = await permissionApi.postCheckPermission(
+      {
+        postCheckPermissionBody: {
+          namespace: request.namespace,
+          object: request.object,
+          relation: request.relation,
+          ...(request.subject.subject_id
+            ? { subject_id: request.subject.subject_id }
+            : { subject_set: request.subject.subject_set }),
+        },
       },
-    });
+      { signal: AbortSignal.timeout(CHECK_TIMEOUT_MS) },
+    );
     return result.allowed;
   } catch (err) {
     if (err instanceof ResponseError && err.response.status === 403) {
@@ -150,17 +156,19 @@ export async function checkPermission(
 /**
  * Check multiple permissions in sequence (Ory doesn't have a batch endpoint
  * on the public check API; doing them individually).
- * Returns an array of { namespace, object, permission, allowed } results.
+ * Returns the verdicts that came back plus how many checks failed.
  */
 export async function checkPermissions(
   checks: PermissionCheck[],
-): Promise<PermissionResult[]> {
+): Promise<{ results: PermissionResult[]; failed: number }> {
   const results: PermissionResult[] = [];
-  // Run in batches of 10 concurrent requests to avoid overwhelming the API
-  const BATCH_SIZE = 10;
+  // Run in small concurrent batches: denied checks on deep models are expensive
+  const BATCH_SIZE = 5;
+  let failed = 0;
   for (let i = 0; i < checks.length; i += BATCH_SIZE) {
     const batch = checks.slice(i, i + BATCH_SIZE);
-    const batchResults = await Promise.all(
+    // One failed check must not discard the other verdicts.
+    const settled = await Promise.allSettled(
       batch.map(async (c) => ({
         ...c,
         allowed: await checkPermission({
@@ -171,9 +179,12 @@ export async function checkPermissions(
         }),
       })),
     );
-    results.push(...batchResults);
+    for (const r of settled) {
+      if (r.status === "fulfilled") results.push(r.value);
+      else failed++;
+    }
   }
-  return results;
+  return { results, failed };
 }
 
 /**
@@ -212,6 +223,17 @@ export function groupSubjectsByNamespace(subjects: SubjectRef[]): Map<string, Su
  * Delete one relation tuple by exact match (Keto admin API, proxied with the
  * project API key; the key needs write access).
  */
+/** The error message an Ory/proxy error response carries, else the generic one. */
+async function responseErrorMessage(err: unknown): Promise<string> {
+  if (err instanceof ResponseError) {
+    const body = await err.response.json().catch(() => null);
+    const message = body?.error?.message ?? body?.error;
+    if (typeof message === "string") return `${err.response.status}: ${message}`;
+    return `${err.response.status} ${err.response.statusText}`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
 export async function deleteRelationTuple(tuple: Relationship): Promise<void> {
   // Every filter of the delete endpoint is optional: a missing field would widen the
   // delete to many tuples, so require a fully specified tuple.
@@ -219,18 +241,22 @@ export async function deleteRelationTuple(tuple: Relationship): Promise<void> {
   if (!tuple.namespace || !tuple.object || !tuple.relation || !hasSubject) {
     throw new Error("Refusing to delete an incompletely specified relation tuple");
   }
-  await relationshipApi.deleteRelationships({
-    namespace: tuple.namespace,
-    object: tuple.object,
-    relation: tuple.relation,
-    ...(tuple.subject_id
-      ? { subjectId: tuple.subject_id }
-      : {
-          subjectSetNamespace: tuple.subject_set?.namespace,
-          subjectSetObject: tuple.subject_set?.object,
-          subjectSetRelation: tuple.subject_set?.relation ?? "",
-        }),
-  });
+  try {
+    await relationshipApi.deleteRelationships({
+      namespace: tuple.namespace,
+      object: tuple.object,
+      relation: tuple.relation,
+      ...(tuple.subject_id
+        ? { subjectId: tuple.subject_id }
+        : {
+            subjectSetNamespace: tuple.subject_set?.namespace,
+            subjectSetObject: tuple.subject_set?.object,
+            subjectSetRelation: tuple.subject_set?.relation ?? "",
+          }),
+    });
+  } catch (err) {
+    throw new Error(await responseErrorMessage(err));
+  }
 }
 
 /** Delete tuples in small concurrent batches; failures are collected, not thrown. */

@@ -11,7 +11,8 @@
   padding: 16px 24px;
   display: flex;
   align-items: center;
-  gap: 24px;
+  flex-wrap: wrap;
+  gap: 12px 24px;
   flex-shrink: 0;
 }
 
@@ -28,9 +29,11 @@
 
 .selectors {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
   flex: 1;
+  min-width: 0;
 }
 
 /* Mode toggle */
@@ -80,6 +83,8 @@
 }
 
 .selector-group select {
+  max-width: 260px;
+  text-overflow: ellipsis;
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
@@ -1059,4 +1064,49 @@
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+/* Subject filter (long subject lists) */
+.subject-filter {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  width: 160px;
+}
+
+.subject-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Shown when the graph hit its node budget */
+.graph-truncated {
+  background: rgba(245, 158, 11, 0.1);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fbbf24;
+  font-size: 13px;
+  padding: 8px 16px;
+}
+
+/* Typed confirmation for large deletes */
+.modal-confirm-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 12px 0;
+}
+
+.modal-confirm-input input {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: inherit;
 }

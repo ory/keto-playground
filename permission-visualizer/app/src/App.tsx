@@ -36,6 +36,15 @@ const DYNAMIC_PALETTE = [
   "#ec4899", "#8b5cf6", "#22c55e", "#f97316", "#14b8a6",
 ];
 
+/** Above this many tuples, deleting a node asks for its ID to be typed. */
+const TYPED_CONFIRM_THRESHOLD = 25;
+/** Show a filter box above the Subject dropdown when it has more options than this. */
+const SUBJECT_FILTER_THRESHOLD = 50;
+/** Nodes per row before a BFS tier wraps onto another row. */
+const NODES_PER_ROW = 15;
+/** Fitting a tiny graph should not blow a single node up to fill the screen. */
+const MAX_FIT_ZOOM = 1.5;
+
 /** Option text in the Subject dropdown, within the chosen namespace. */
 function subjectOptionLabel(s: SubjectRef): string {
   if (!s.subject_set) return s.label;
@@ -67,6 +76,7 @@ function bfsTierLayout(graphData: GraphData | null): cytoscape.LayoutOptions {
 
   const NODE_SEP = 200;
   const RANK_SEP = 220;
+  const ROW_SEP = 110;
 
   const adjacency = new Map<string, string[]>();
   for (const { data } of graphData.edges) {
@@ -92,21 +102,28 @@ function bfsTierLayout(graphData: GraphData | null): cytoscape.LayoutOptions {
     tiers.set(lvl, [...(tiers.get(lvl) ?? []), node.data.id]);
   }
 
+  // Wide tiers wrap onto several rows so the graph keeps a readable zoom.
   const positions: Record<string, cytoscape.Position> = { [centerId]: { x: 0, y: 0 } };
   const placedX = new Map([[centerId, 0]]);
   const maxLevel = Math.max(...tiers.keys());
+  let y = 0;
   for (let lvl = 1; lvl <= maxLevel; lvl++) {
     const withBary = (tiers.get(lvl) ?? []).map((id) => {
       const parents = (adjacency.get(id) ?? []).filter((n) => level.get(n) === lvl - 1 && placedX.has(n));
       const avgX = parents.length ? parents.reduce((sum, p) => sum + placedX.get(p)!, 0) / parents.length : 0;
       return { id, avgX };
     });
+    if (withBary.length === 0) continue;
     withBary.sort((a, b) => a.avgX - b.avgX);
+    y += RANK_SEP;
+    const perRow = Math.min(withBary.length, NODES_PER_ROW);
     withBary.forEach(({ id }, i) => {
-      const x = (i - (withBary.length - 1) / 2) * NODE_SEP;
-      positions[id] = { x, y: lvl * RANK_SEP };
+      const row = Math.floor(i / NODES_PER_ROW);
+      const x = ((i % NODES_PER_ROW) - (perRow - 1) / 2) * NODE_SEP;
+      positions[id] = { x, y: y + row * ROW_SEP };
       placedX.set(id, x);
     });
+    y += (Math.ceil(withBary.length / NODES_PER_ROW) - 1) * ROW_SEP;
   }
 
   return { name: "preset", positions, fit: true, padding: 40, animate: true, animationDuration: 300 };
@@ -125,6 +142,8 @@ function App() {
   const [confirmDelete, setConfirmDelete] = useState<NodeTuples | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [subjectFilter, setSubjectFilter] = useState("");
   const cyRef = useRef<cytoscape.Core | null>(null);
 
   const isLive = mode === "live";
@@ -149,12 +168,14 @@ function App() {
     error,
     permissionResults,
     loadingPermissions,
+    failedChecks,
     checkSubjectPermissions,
     refetch,
   } = isLive ? liveData : offlineData;
 
   function selectSubject(label: string) {
     setSelectedSubject(label);
+    setSubjectFilter("");
     setSelectedBranchKey("");
     setSelectedNodeId(null);
   }
@@ -203,20 +224,19 @@ function App() {
       ? [DIRECT_ID_NAMESPACE, ...keys.filter((k) => k !== DIRECT_ID_NAMESPACE)]
       : keys;
   }, [subjectGroups]);
-  const subjectOptions = subjectGroups.get(selectedSubjectNs) ?? [];
+  const namespaceSubjects = subjectGroups.get(selectedSubjectNs) ?? [];
+  // The selected subject stays listed, so the dropdown never disagrees with the graph.
+  const subjectOptions = subjectFilter
+    ? namespaceSubjects.filter(
+        (s) => s.label === selectedSubject || s.label.toLowerCase().includes(subjectFilter.toLowerCase()),
+      )
+    : namespaceSubjects;
 
   // Resolve the selected dropdown value back to its SubjectRef
   const selectedSubjectRef = useMemo(
     () => effectiveSubjects.find((s) => s.label === selectedSubject) ?? null,
     [effectiveSubjects, selectedSubject],
   );
-
-  // Check permissions when the subject changes (live mode only)
-  useEffect(() => {
-    if (selectedSubjectRef && isLive) {
-      checkSubjectPermissions(selectedSubjectRef);
-    }
-  }, [selectedSubjectRef, checkSubjectPermissions, isLive]);
 
   // Get the subject's direct relations for the sidebar
   const subjectRelations = useMemo(() => {
@@ -255,6 +275,10 @@ function App() {
     cyRef.current = cy;
     cy.on("layoutstop", () => {
       cy.fit(undefined, 40);
+      if (cy.zoom() > MAX_FIT_ZOOM) {
+        cy.zoom(MAX_FIT_ZOOM);
+        cy.center();
+      }
     });
     cy.on("tap", "node", (evt) => {
       setSelectedNodeId(evt.target.id());
@@ -330,14 +354,32 @@ function App() {
     [scopeToClass, selectedClass, classNames],
   );
 
+  // The subject's graph before permission results: its objects are what gets checked.
+  const relationGraph = useMemo(() => {
+    if (!selectedSubjectRef || effectiveTuples.length === 0) return null;
+    return buildGraph(effectiveTuples, selectedSubjectRef, [], namespaceColorMap, { branchFilter, classScope });
+  }, [selectedSubjectRef, effectiveTuples, namespaceColorMap, branchFilter, classScope]);
+  const graphObjectIds = useMemo(
+    () => new Set(relationGraph?.nodes.map((n) => n.data.id) ?? []),
+    [relationGraph],
+  );
+
+  // Check permissions for the objects in the subject's graph (live mode only)
+  useEffect(() => {
+    if (selectedSubjectRef && isLive) {
+      checkSubjectPermissions(selectedSubjectRef, graphObjectIds);
+    }
+  }, [selectedSubjectRef, graphObjectIds, checkSubjectPermissions, isLive]);
+
   // Build graph elements from effective tuples + permission results
   const graphData = useMemo(() => {
     if (!selectedSubjectRef || effectiveTuples.length === 0) return null;
+    if (permissionResults.length === 0) return relationGraph;
     return buildGraph(effectiveTuples, selectedSubjectRef, permissionResults, namespaceColorMap, {
       branchFilter,
       classScope,
     });
-  }, [selectedSubjectRef, effectiveTuples, permissionResults, namespaceColorMap, branchFilter, classScope]);
+  }, [selectedSubjectRef, effectiveTuples, permissionResults, namespaceColorMap, branchFilter, classScope, relationGraph]);
 
   const elements = useMemo(() => {
     if (!graphData) return [];
@@ -353,24 +395,27 @@ function App() {
     if (!node) return null;
     const { namespace } = node.data;
     const object = node.data.id.slice(namespace.length + 1);
-    // Legacy subject_ids are drawn as "User:<id>" nodes and referenced by subject_id.
+    // A legacy subject_id is drawn as a synthetic "User:<id>" node but is a different
+    // subject from the namespaced User:<id>: match it by subject_id only.
     const legacyId =
       selectedSubjectRef?.subject_id && node.data.isSelectedUser ? selectedSubjectRef.subject_id : null;
+    const references = (t: Relationship) =>
+      legacyId !== null
+        ? t.subject_id === legacyId
+        : (t.namespace === namespace && t.object === object) ||
+          (t.subject_set?.namespace === namespace && t.subject_set.object === object);
 
     const seen = new Set<string>();
     const matched: Relationship[] = [];
     for (const t of effectiveTuples) {
-      const isObject = t.namespace === namespace && t.object === object;
-      const isSubjectSet = t.subject_set?.namespace === namespace && t.subject_set.object === object;
-      const isLegacySubject = legacyId !== null && t.subject_id === legacyId;
-      if (!isObject && !isSubjectSet && !isLegacySubject) continue;
+      if (!references(t)) continue;
       const key = `${t.namespace}:${t.object}#${t.relation}@${tupleSubjectText(t)}`;
       if (!seen.has(key)) {
         seen.add(key);
         matched.push(t);
       }
     }
-    return { label: node.data.id, tuples: matched };
+    return { label: legacyId ?? node.data.id, tuples: matched };
   }, [selectedNodeId, graphData, effectiveTuples, selectedSubjectRef]);
 
   const handleConfirmDelete = useCallback(async () => {
@@ -380,19 +425,32 @@ function App() {
     try {
       const { deleted, errors } = await deleteRelationTuples(confirmDelete.tuples);
       if (errors.length > 0) {
+        // Keep the dialog open on the failed tuples so the error is seen in context.
         setDeleteError(
           `Deleted ${deleted} of ${confirmDelete.tuples.length} tuples; ${errors.length} failed (${errors[0].reason})`,
         );
+        setConfirmDelete({ ...confirmDelete, tuples: errors.map((e) => e.tuple) });
+        setDeleteConfirmText("");
+      } else {
+        setConfirmDelete(null);
+        setDeleteConfirmText("");
+        setSelectedNodeId(null);
       }
-      setConfirmDelete(null);
-      setSelectedNodeId(null);
-      await refetch();
+      if (deleted > 0) await refetch();
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : String(err));
     } finally {
       setDeleting(false);
     }
   }, [confirmDelete, deleting, refetch]);
+
+  function openDeleteConfirm(target: NodeTuples) {
+    setDeleteError(null);
+    setDeleteConfirmText("");
+    setConfirmDelete(target);
+  }
+  const needsTypedConfirm = (confirmDelete?.tuples.length ?? 0) > TYPED_CONFIRM_THRESHOLD;
+  const deleteConfirmed = !needsTypedConfirm || deleteConfirmText === confirmDelete?.label;
 
   // Which example keys to show in the dropdown
   const dropdownKeys = isLive ? exampleKeys : offlineKeys;
@@ -425,17 +483,14 @@ function App() {
               onChange={(e) => selectExample(e.target.value)}
             >
               <option value="">Select a use case...</option>
-              {isLive ? (
-                <option value={EXPLORE_KEY}>Explore Live Data</option>
-              ) : (
-                <optgroup label="Examples">
-                  {dropdownKeys.map((key) => (
-                    <option key={key} value={key}>
-                      {EXAMPLES[key]?.name || key}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
+              {isLive && <option value={EXPLORE_KEY}>Explore Live Data</option>}
+              <optgroup label="Examples">
+                {dropdownKeys.map((key) => (
+                  <option key={key} value={key}>
+                    {EXAMPLES[key]?.name || key}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           </div>
           {(exampleMeta || (!isLive && selectedExample)) && (
@@ -467,6 +522,16 @@ function App() {
               </div>
               <div className="selector-group">
                 <label>Subject</label>
+                {namespaceSubjects.length > SUBJECT_FILTER_THRESHOLD && (
+                  <input
+                    type="search"
+                    className="subject-filter"
+                    aria-label="Filter subjects"
+                    placeholder={`Filter ${namespaceSubjects.length} subjects...`}
+                    value={subjectFilter}
+                    onChange={(e) => setSubjectFilter(e.target.value)}
+                  />
+                )}
                 <select
                   aria-label="Subject"
                   value={selectedSubject}
@@ -520,6 +585,9 @@ function App() {
             <div className="status-indicator loading">Checking permissions...</div>
           )}
           {error && <div className="status-indicator error">Error: {error}</div>}
+          {isLive && failedChecks > 0 && !loadingPermissions && (
+            <div className="status-indicator error">{failedChecks} permission checks failed</div>
+          )}
         </div>
       </header>
 
@@ -569,12 +637,14 @@ function App() {
               <button
                 className="btn-danger"
                 disabled={nodeTuples.tuples.length === 0 || deleting}
-                onClick={() => setConfirmDelete(nodeTuples)}
+                onClick={() => openDeleteConfirm(nodeTuples)}
               >
                 Delete {nodeTuples.tuples.length} tuple{nodeTuples.tuples.length === 1 ? "" : "s"}
               </button>
-              {deleteError && <div className="delete-error">{deleteError}</div>}
             </div>
+          )}
+          {isLive && deleteError && !confirmDelete && (
+            <div className="delete-error" role="alert">{deleteError}</div>
           )}
 
           {/* Subject's Direct Relations */}
@@ -649,6 +719,12 @@ function App() {
 
         {/* Main panel: graph + relationship editor */}
         <div className="main-panel">
+          {graphData?.truncated && (
+            <div className="graph-truncated" role="status">
+              Showing the first {graphData.nodes.length} nodes of a larger graph — narrow it with the
+              Branch filter or a more specific subject.
+            </div>
+          )}
           <div className="graph-container">
             {!selectedExample ? (
               <div className="empty-state">
@@ -682,7 +758,6 @@ function App() {
                 layout={layout}
                 className="cy"
                 cy={handleCyInit}
-                wheelSensitivity={0.3}
               />
             ) : (
               <div className="empty-state">
@@ -730,7 +805,8 @@ function App() {
             <h2>Delete {confirmDelete.tuples.length} tuple{confirmDelete.tuples.length === 1 ? "" : "s"}?</h2>
             <p className="modal-warn">
               This will permanently delete the following tuples from Ory Keto.
-              All tuples involving <strong>{confirmDelete.label}</strong> (as object or as a subject set) will be removed. <strong>This cannot be undone.</strong>
+              All tuples involving <strong>{confirmDelete.label}</strong> (as object or as a subject set) will be
+              removed — including ones outside the current graph view. <strong>This cannot be undone.</strong>
             </p>
             <div className="modal-tuple-list">
               {confirmDelete.tuples.slice(0, 50).map((t, i) => (
@@ -744,6 +820,18 @@ function App() {
                 </div>
               )}
             </div>
+            {needsTypedConfirm && (
+              <label className="modal-confirm-input">
+                Type <code>{confirmDelete.label}</code> to confirm
+                <input
+                  aria-label="Confirm node ID"
+                  value={deleteConfirmText}
+                  onChange={(e) => setDeleteConfirmText(e.target.value)}
+                  disabled={deleting}
+                />
+              </label>
+            )}
+            {deleteError && <div className="delete-error" role="alert">{deleteError}</div>}
             <div className="modal-actions">
               <button
                 className="btn-secondary"
@@ -754,7 +842,7 @@ function App() {
               </button>
               <button
                 className="btn-danger"
-                disabled={deleting}
+                disabled={deleting || !deleteConfirmed}
                 onClick={handleConfirmDelete}
               >
                 {deleting ? "Deleting…" : `Delete ${confirmDelete.tuples.length}`}

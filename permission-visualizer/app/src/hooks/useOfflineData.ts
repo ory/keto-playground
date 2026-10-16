@@ -42,6 +42,7 @@ export function useOfflineData(exampleKey: string | null): KetoData {
     error: null,
     permissionResults: NO_PERMISSION_RESULTS,
     loadingPermissions: false,
+    failedChecks: 0,
     checkSubjectPermissions,
     refetch,
   };
