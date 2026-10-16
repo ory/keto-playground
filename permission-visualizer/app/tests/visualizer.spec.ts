@@ -1,298 +1,268 @@
 /**
- * E2E tests for the Permission Visualizer.
+ * E2E tests for the Permission Visualizer in Live mode, against the local Keto
+ * in permission-visualizer/local-keto (OPL from local-keto/namespaces.ts, tuples
+ * from local-keto/seed.mjs). Start it with `bash local-keto/up.sh` and run with
+ *   ORY_SDK_URL=http://localhost:4455 ORY_ACCESS_TOKEN=local
+ * so the dev server's /api proxy points at it.
  *
- * Prerequisites:
- *   1. `ory tunnel` running on port 4000 (proxies to Ory Network)
- *   2. An OPL and tuples loaded for at least one example (e.g., content-publishing-workflow)
- *   3. Vite dev server on port 5173 (started automatically by Playwright)
- *
- * These tests verify the app fetches LIVE data from Keto via the tunnel.
+ * The error-handling test starts its own dev server pointed at a port nothing
+ * listens on, so it needs no Keto.
  */
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
-// Pick a subject via the two-step Subject Namespace + Subject dropdowns.
-async function pickFirstSubject(page: Page) {
-  const subjectNsSelect = page.getByLabel("Subject Namespace");
-  await expect(subjectNsSelect).toBeVisible({ timeout: 10_000 });
-  await expect(async () => {
-    const options = await subjectNsSelect.locator("option").allTextContents();
-    expect(options.length).toBeGreaterThan(1);
-  }).toPass({ timeout: 15_000 });
-  await subjectNsSelect.selectOption({ index: 1 });
+import { freePort, startDevServer } from "./helpers/devServer";
+import { graphNodeIds, pickSubject, renderedGraph } from "./helpers/graph";
+import { startFaultyUpstream } from "./helpers/faultyUpstream";
+import { LOCAL_KETO_NAMESPACES, deleteObjectTuples, expectLocalKeto, putTuples, runId } from "./helpers/keto";
 
-  const subjectSelect = page.getByLabel("Subject", { exact: true });
-  await expect(async () => {
-    const options = await subjectSelect.locator("option").allTextContents();
-    expect(options.length).toBeGreaterThan(1);
-  }).toPass({ timeout: 15_000 });
-  await subjectSelect.selectOption({ index: 1 });
+const LOCAL_EXAMPLE = "Local deep graph (local-keto)";
+
+async function openLive(page: Page, baseUrl = "") {
+  await page.goto(`${baseUrl}/`);
+  await page.getByRole("button", { name: "Live" }).click();
 }
 
-// Helper: check that the Keto API is reachable through the proxy
-test.describe("API connectivity", () => {
-  test("GET /api/namespaces returns live namespace list", async ({
-    request,
-  }) => {
+async function expectLiveTuplesLoaded(page: Page) {
+  await expect(page.locator(".connection-status")).toContainText(
+    new RegExp(`Live — \\d+ tuples, ${LOCAL_KETO_NAMESPACES.length} namespaces`),
+    { timeout: 30_000 },
+  );
+}
+
+test.describe("API connectivity (local Keto)", () => {
+  test.beforeAll(async ({ request }) => {
+    await expectLocalKeto(request);
+  });
+
+  test("GET /api/namespaces returns the live namespace list", async ({ request }) => {
     const res = await request.get("/api/namespaces");
-    expect(res.ok()).toBeTruthy();
-    const data = await res.json();
-    expect(data.namespaces).toBeDefined();
-    expect(Array.isArray(data.namespaces)).toBeTruthy();
-    expect(data.namespaces.length).toBeGreaterThan(0);
-    // Each namespace should have a name
-    for (const ns of data.namespaces) {
-      expect(ns.name).toBeDefined();
-      expect(typeof ns.name).toBe("string");
-    }
+    expect(res.status()).toBe(200);
+    const names = ((await res.json()).namespaces as { name: string }[]).map((n) => n.name);
+    expect(names.sort()).toEqual(LOCAL_KETO_NAMESPACES);
   });
 
-  test("GET /api/relation-tuples returns tuples for a namespace", async ({
-    request,
-  }) => {
-    // First get the namespaces to know which to query
-    const nsRes = await request.get("/api/namespaces");
-    const nsData = await nsRes.json();
-    const firstName = nsData.namespaces[0].name;
-
-    const res = await request.get(
-      `/api/relation-tuples?namespace=${firstName}&page_size=5`
-    );
-    expect(res.ok()).toBeTruthy();
+  test("GET /api/relation-tuples returns a page of tuples for a namespace", async ({ request }) => {
+    const res = await request.get("/api/relation-tuples?namespace=Folder&page_size=5");
+    expect(res.status()).toBe(200);
     const data = await res.json();
-    expect(data.relation_tuples).toBeDefined();
-    expect(Array.isArray(data.relation_tuples)).toBeTruthy();
+    expect(data.relation_tuples).toHaveLength(5);
+    for (const t of data.relation_tuples) expect(t.namespace).toBe("Folder");
+    expect(data.next_page_token).toBeTruthy();
   });
 
-  test("POST /api/relation-tuples/check returns allowed boolean", async ({
-    request,
-  }) => {
-    // Use a known tuple from whatever example is currently loaded
-    const nsRes = await request.get("/api/namespaces");
-    const nsData = await nsRes.json();
-    const firstName = nsData.namespaces[0].name;
+  test("POST /api/relation-tuples/check returns a verdict for a subject set", async ({ request }) => {
+    const tuples = (await (await request.get("/api/relation-tuples?namespace=Folder&object=f1.1")).json())
+      .relation_tuples as { namespace: string; object: string; relation: string; subject_set?: object }[];
+    const owner = tuples.find((t) => t.relation === "owners" && t.subject_set);
+    expect(owner, JSON.stringify(tuples)).toBeDefined();
 
-    // Get a tuple to test with
-    const tuplesRes = await request.get(
-      `/api/relation-tuples?namespace=${firstName}&page_size=1`
-    );
-    const tuplesData = await tuplesRes.json();
+    const allowed = await request.post("/api/relation-tuples/check", {
+      data: { namespace: "Folder", object: "f1.1", relation: "own", subject_set: owner!.subject_set },
+    });
+    expect(allowed.status()).toBe(200);
+    expect(await allowed.json()).toEqual({ allowed: true });
 
-    if (tuplesData.relation_tuples.length > 0) {
-      const t = tuplesData.relation_tuples[0];
-      // If this tuple has a subject_id, check it
-      if (t.subject_id) {
-        const checkRes = await request.post("/api/relation-tuples/check", {
-          data: {
-            namespace: t.namespace,
-            object: t.object,
-            relation: t.relation,
-            subject_id: t.subject_id,
-          },
-        });
-        const checkData = await checkRes.json();
-        expect(typeof checkData.allowed).toBe("boolean");
-      }
-    }
+    // Folder:root is f1.1's parent, not the other way round. Keto's /check answers
+    // a denial with 403; /check/openapi with 200.
+    const reversed = { namespace: "Folder", object: "root", relation: "parents", subject_set: { namespace: "Folder", object: "f1.1", relation: "" } };
+    const denied = await request.post("/api/relation-tuples/check", { data: reversed });
+    expect(denied.status()).toBe(403);
+    expect(await denied.json()).toEqual({ allowed: false });
+    const deniedOpenApi = await request.post("/api/relation-tuples/check/openapi", { data: reversed });
+    expect(deniedOpenApi.status()).toBe(200);
+    expect(await deniedOpenApi.json()).toEqual({ allowed: false });
   });
 });
 
-test.describe("UI renders with live data", () => {
-  test("homepage loads with use case selector", async ({ page }) => {
-    await page.goto("/");
-    await expect(page.locator("h1")).toContainText("Permission Visualizer");
-    // Should have the use case dropdown
-    const select = page.locator("select").first();
-    await expect(select).toBeVisible();
-    // Should have options for all 7 examples
-    const options = await select.locator("option").allTextContents();
-    expect(options.length).toBeGreaterThanOrEqual(8); // 1 placeholder + 7 examples
-    expect(options).toContain("RBAC App Access");
-    expect(options).toContain("Content Publishing Workflow");
+test.describe("UI renders with live data (local Keto)", () => {
+  test.beforeAll(async ({ request }) => {
+    await expectLocalKeto(request);
   });
 
-  test("selecting a use case fetches live tuples and shows users", async ({
-    page,
-  }) => {
-    await page.goto("/");
-
-    // Select any use case
-    const useCaseSelect = page.locator("select").first();
-    await useCaseSelect.selectOption({ index: 1 }); // First real example
-
-    // Should show loading indicator briefly, then user dropdown
-    const subjectNsSelect = page.getByLabel("Subject Namespace");
-    await expect(subjectNsSelect).toBeVisible({ timeout: 10_000 });
-
-    // Wait for subject namespaces to load (more than just the placeholder)
-    await expect(async () => {
-      const options = await subjectNsSelect.locator("option").allTextContents();
-      expect(options.length).toBeGreaterThan(1);
-    }).toPass({ timeout: 15_000 });
-
-    // Pick the first available namespace, then the first subject within it
-    await subjectNsSelect.selectOption({ index: 1 });
-    const subjectSelect = page.getByLabel("Subject", { exact: true });
-    await expect(async () => {
-      const options = await subjectSelect.locator("option").allTextContents();
-      expect(options.length).toBeGreaterThan(1);
-    }).toPass({ timeout: 15_000 });
-
-    // Should show connection status with tuple count
-    await expect(page.locator(".connection-status")).toBeVisible({
-      timeout: 15_000,
-    });
-    await expect(page.locator(".connection-status")).toContainText("Live");
-    await expect(page.locator(".connection-status")).toContainText("tuples");
+  test("Live mode opens Explore Live Data and lists the examples next to it", async ({ page }) => {
+    await openLive(page);
+    const useCase = page.locator("select").first();
+    await expect(useCase).toHaveValue("__explore__");
+    const options = await useCase.locator("option").allTextContents();
+    expect(options.slice(0, 2)).toEqual(["Select a use case...", "Explore Live Data"]);
+    expect(options).toEqual(expect.arrayContaining(["RBAC App Access", "Content Publishing Workflow", LOCAL_EXAMPLE]));
   });
 
-  test("selecting a user triggers live permission checks and shows results", async ({
-    page,
-    request,
-  }) => {
-    // First, determine which example matches the currently loaded OPL
-    const nsRes = await request.get("/api/namespaces");
-    const nsData = await nsRes.json();
-    const liveNamespaces = new Set(
-      nsData.namespaces.map((n: { name: string }) => n.name),
-    );
+  test("Explore Live Data fetches the live tuples and offers their subjects", async ({ page }) => {
+    await openLive(page);
+    await expectLiveTuplesLoaded(page);
 
-    // Map namespaces to examples
-    const exampleMap = {
-      "RBAC App Access": ["Application", "Role"],
-      "RBAC Bank Accounts": ["BankAccount", "Role"],
-      "RAG Document Access": ["Document", "Team"],
-      "B2B Hierarchy": ["Business", "LineOfBusiness", "Customer"],
-      "SaaS Feature Gating": ["Feature", "Plan", "Organization"],
-      "Healthcare Records": ["Patient", "MedicalRecord"],
-      "Content Publishing Workflow": ["Article", "Role"],
-    };
+    await page.getByLabel("Subject Namespace").selectOption("User");
+    const subjects = await page.getByLabel("Subject", { exact: true }).locator("option").allTextContents();
+    expect(subjects).toEqual(expect.arrayContaining(["user-0001", "user-hub"]));
+  });
 
-    let matchedExample: string | null = null;
-    for (const [name, required] of Object.entries(exampleMap)) {
-      if (required.every((ns) => liveNamespaces.has(ns))) {
-        matchedExample = name;
-        break;
-      }
+  test("the local example checks its permissions and shows ALLOWED and DENIED verdicts", async ({ page, request }) => {
+    await openLive(page);
+    await page.locator("select").first().selectOption({ label: LOCAL_EXAMPLE });
+    await expectLiveTuplesLoaded(page);
+    await pickSubject(page, "User", "User:user-hub");
+
+    const card = page.locator(".permission-card").filter({ hasText: "Document:doc-0024" });
+    await expect(card).toContainText("view: ALLOWED", { timeout: 60_000 });
+    await expect(card).toContainText("edit: DENIED");
+    await expect(page.locator(".badge-allowed").first()).toBeVisible();
+    await expect(page.locator(".badge-denied").first()).toBeVisible();
+
+    // The badges are Keto's verdicts.
+    const subject = { namespace: "User", object: "user-hub", relation: "" };
+    for (const [relation, allowed] of [["view", true], ["edit", false]] as const) {
+      const res = await request.post("/api/relation-tuples/check/openapi", {
+        data: { namespace: "Document", object: "doc-0024", relation, subject_set: subject },
+      });
+      expect(await res.json()).toEqual({ allowed });
     }
 
-    // Skip if no matching example found (wrong OPL loaded)
-    test.skip(!matchedExample, "No matching example for currently loaded OPL");
-
-    await page.goto("/");
-    const useCaseSelect = page.locator("select").first();
-    await useCaseSelect.selectOption({ label: matchedExample! });
-
-    await pickFirstSubject(page);
-
-    // Should show permission results section with ALLOWED/DENIED text
-    await expect(async () => {
-      const permCards = page.locator(".permission-card");
-      const count = await permCards.count();
-      expect(count).toBeGreaterThan(0);
-    }).toPass({ timeout: 30_000 });
-
-    // Verify badges contain actual permission verdicts
-    const pageText = await page.locator(".permissions-grid").textContent();
-    expect(pageText).toMatch(/ALLOWED|DENIED/);
+    // Only objects in the subject's graph are checked.
+    const graphIds = new Set(await graphNodeIds(page));
+    const checked = await page.locator(".perm-object").allTextContents();
+    expect(checked.length).toBeGreaterThan(0);
+    expect(checked.filter((id) => !graphIds.has(id))).toEqual([]);
   });
 
-  test("graph renders with nodes and edges for selected user", async ({
-    page,
-  }) => {
-    await page.goto("/");
+  test("the graph renders the selected subject with its relations", async ({ page }) => {
+    await openLive(page);
+    await expectLiveTuplesLoaded(page);
+    await pickSubject(page, "User", "User:user-0001");
 
-    const useCaseSelect = page.locator("select").first();
-    await useCaseSelect.selectOption({ index: 1 });
-
-    await pickFirstSubject(page);
-
-    // Cytoscape canvas should appear
-    const canvas = page.locator(".cy canvas");
-    await expect(canvas.first()).toBeVisible({ timeout: 15_000 });
+    const graph = await renderedGraph(page);
+    const center = graph?.nodes.find((n) => n.isSelectedUser);
+    expect(center?.id).toBe("User:user-0001");
+    expect(graph!.nodes.length).toBeGreaterThan(1);
+    expect(graph!.edges.some((e) => e.source === "User:user-0001")).toBe(true);
   });
 
-  test("sidebar shows direct relations for selected user", async ({
-    page,
-  }) => {
-    await page.goto("/");
+  test("the sidebar lists exactly the subject's direct relations", async ({ page, request }) => {
+    const res = await request.get(
+      "/api/relation-tuples?subject_set.namespace=User&subject_set.object=user-0001&subject_set.relation=",
+    );
+    const direct = ((await res.json()).relation_tuples as { namespace: string; object: string; relation: string }[])
+      .map((t) => `${t.relation}->${t.namespace}:${t.object}`)
+      .sort();
+    expect(direct.length).toBeGreaterThan(0);
 
-    const useCaseSelect = page.locator("select").first();
-    await useCaseSelect.selectOption({ index: 1 });
+    await openLive(page);
+    await expectLiveTuplesLoaded(page);
+    await pickSubject(page, "User", "User:user-0001");
 
-    await pickFirstSubject(page);
-
-    // Should show "Direct Relations" section
-    await expect(page.locator("text=Direct Relations")).toBeVisible({
-      timeout: 15_000,
-    });
-    // Should have at least one relation item
-    const relations = page.locator(".relation-item");
-    await expect(async () => {
-      expect(await relations.count()).toBeGreaterThan(0);
-    }).toPass({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: "Direct Relations" })).toBeVisible();
+    const shown = (await page.locator(".relation-item").allTextContents()).sort();
+    expect(shown).toEqual(direct);
   });
 
-  test("namespace legend reflects live namespaces", async ({ page }) => {
-    await page.goto("/");
+  test("the namespace legend lists the live namespaces", async ({ page }) => {
+    await openLive(page);
+    await expectLiveTuplesLoaded(page);
 
-    const useCaseSelect = page.locator("select").first();
-    await useCaseSelect.selectOption({ index: 1 });
-
-    // Wait for data to load
-    await expect(page.locator(".connection-status")).toBeVisible({
-      timeout: 15_000,
-    });
-
-    // Legend should be visible with namespace names
     await expect(page.getByRole("heading", { name: "Namespaces" })).toBeVisible();
-    const legendItems = page.locator(".legend-item");
-    const count = await legendItems.count();
-    expect(count).toBeGreaterThan(0);
+    await expect(page.locator(".legend-item")).toHaveText(LOCAL_KETO_NAMESPACES);
   });
 
-  test("switching use cases resets state and re-fetches", async ({ page }) => {
-    await page.goto("/");
+  test("switching use cases resets the subject and re-fetches", async ({ page }) => {
+    await openLive(page);
+    await expectLiveTuplesLoaded(page);
+    await pickSubject(page, "User", "User:user-0001");
 
-    const useCaseSelect = page.locator("select").first();
+    await page.locator("select").first().selectOption({ label: LOCAL_EXAMPLE });
 
-    // Select first example
-    await useCaseSelect.selectOption({ index: 1 });
-    await expect(page.locator(".connection-status")).toBeVisible({
-      timeout: 15_000,
-    });
-
-    // Select a subject
-    await pickFirstSubject(page);
-
-    // Now switch to a different example
-    await useCaseSelect.selectOption({ index: 2 });
-
-    // Subject dropdowns should reset
     await expect(page.getByLabel("Subject Namespace")).toHaveValue("");
     await expect(page.getByLabel("Subject", { exact: true })).toHaveValue("");
+    await expectLiveTuplesLoaded(page);
+  });
+});
 
-    // Should re-fetch and show connection status again
-    await expect(page.locator(".connection-status")).toBeVisible({
-      timeout: 15_000,
-    });
+test.describe("Permission checks that fail (local Keto)", () => {
+  const run = runId();
+  const user = `pw-chk-user-${run}`;
+  const okDoc = `pw-chk-ok-${run}`;
+  const erroringDoc = `pw-chk-500-${run}`;
+  const hangingDoc = `pw-chk-hang-${run}`;
+  const docs = [okDoc, erroringDoc, hangingDoc];
+
+  test.beforeAll(async ({ request }) => {
+    await expectLocalKeto(request);
+  });
+
+  test.beforeEach(async ({ request }) => {
+    await putTuples(
+      request,
+      docs.map((object) => ({ namespace: "Document", object, relation: "viewers", subject_set: { namespace: "User", object: user, relation: "" } })),
+    );
+  });
+
+  test.afterEach(async ({ request }) => {
+    for (const object of docs) await deleteObjectTuples(request, "Document", object);
+  });
+
+  test("errored and timed-out checks are counted, the other verdicts still show", async ({ page }) => {
+    // Real Keto behind a proxy that answers checks on one document with 500 and
+    // never answers those on another (the client gives up after 15 s).
+    const upstream = await startFaultyUpstream(process.env.ORY_SDK_URL!, { error: [erroringDoc], hang: [hangingDoc] });
+    const server = await startDevServer({ ORY_SDK_URL: upstream.url, ORY_ACCESS_TOKEN: process.env.ORY_ACCESS_TOKEN ?? "" });
+    try {
+      await openLive(page, server.url);
+      await page.locator("select").first().selectOption({ label: LOCAL_EXAMPLE });
+      await expectLiveTuplesLoaded(page);
+      await pickSubject(page, "User", `User:${user}`);
+
+      // Document view + edit on each of the 3 documents; 2 x 2 of them fail.
+      await expect(page.locator(".status-indicator.error")).toHaveText("4 permission checks failed", { timeout: 45_000 });
+      await expect(page.locator(".perm-object")).toHaveText([`Document:${okDoc}`]);
+      const card = page.locator(".permission-card");
+      await expect(card).toContainText("view: ALLOWED");
+      await expect(card).toContainText("edit: DENIED");
+      await expect(page.getByText("Checking permissions...")).toHaveCount(0);
+      expect(await graphNodeIds(page)).toEqual([...docs.map((d) => `Document:${d}`), `User:${user}`].sort());
+    } finally {
+      await server.stop();
+      await upstream.close();
+    }
+  });
+
+  test("no failure indicator when every check succeeds", async ({ page }) => {
+    await openLive(page);
+    await page.locator("select").first().selectOption({ label: LOCAL_EXAMPLE });
+    await expectLiveTuplesLoaded(page);
+    await pickSubject(page, "User", `User:${user}`);
+
+    await expect
+      .poll(async () => (await page.locator(".perm-object").allTextContents()).sort(), { timeout: 30_000 })
+      .toEqual(docs.map((d) => `Document:${d}`).sort());
+    await expect(page.getByText("Checking permissions...")).toHaveCount(0);
+    await expect(page.getByText(/permission checks failed/)).toHaveCount(0);
+  });
+});
+
+test.describe("Offline mode", () => {
+  test("Offline mode lists neither Explore Live Data nor the live-only example", async ({ page }) => {
+    await page.goto("/");
+    const options = await page.locator("select").first().locator("option").allTextContents();
+    expect(options).toContain("RBAC App Access");
+    expect(options).not.toContain("Explore Live Data");
+    expect(options).not.toContain(LOCAL_EXAMPLE);
   });
 });
 
 test.describe("error handling", () => {
-  test("shows error state when API is unreachable", async ({ page }) => {
-    // Intercept API calls to simulate failure
-    await page.route("**/api/namespaces", (route) =>
-      route.fulfill({ status: 500, body: "Internal Server Error" })
-    );
+  test("shows an error when the proxy cannot reach Keto", async ({ page }) => {
+    const unreachable = `http://127.0.0.1:${await freePort()}`;
+    const server = await startDevServer({ ORY_SDK_URL: unreachable, ORY_ACCESS_TOKEN: "unused" });
+    try {
+      await openLive(page, server.url);
 
-    await page.goto("/");
-    const useCaseSelect = page.locator("select").first();
-    await useCaseSelect.selectOption({ index: 1 });
-
-    // Should show error status
-    await expect(page.locator(".status-indicator.error")).toBeVisible({
-      timeout: 10_000,
-    });
+      await expect(page.locator(".status-indicator.error")).toContainText("Error:", { timeout: 15_000 });
+      await expect(page.getByText("Failed to connect to Ory Keto")).toBeVisible();
+      await expect(page.locator(".connection-status")).toHaveCount(0);
+      await expect(page.getByLabel("Subject Namespace")).toBeDisabled();
+      await expect(page.getByLabel("Subject Namespace").locator("option")).toHaveText(["No subjects found"]);
+    } finally {
+      await server.stop();
+    }
   });
 });

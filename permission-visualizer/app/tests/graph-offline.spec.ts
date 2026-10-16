@@ -12,10 +12,11 @@ test.describe("Graph (offline mode)", () => {
     await page.goto("/");
     await page.locator("select").first().selectOption({ index: 1 });
 
-    const subjectSelect = page.locator("select").nth(1);
-    const options = await subjectSelect.locator("option").allTextContents();
-    // All bundled examples seed subjects as User:<name> subject sets.
-    expect(options.filter((o) => o.startsWith("User:")).length).toBeGreaterThan(0);
+    // All bundled examples seed subjects as User:<name> subject sets, so the
+    // User namespace is offered and lists the bare object names.
+    await page.getByLabel("Subject Namespace").selectOption("User");
+    const options = await page.getByLabel("Subject", { exact: true }).locator("option").allTextContents();
+    expect(options).toContain("ceo-pat");
   });
 
   test("selecting a subject renders its relation graph and sidebar", async ({
@@ -24,8 +25,8 @@ test.describe("Graph (offline mode)", () => {
     await page.goto("/");
     await page.locator("select").first().selectOption({ index: 1 }); // b2b-hierarchy
 
-    const subjectSelect = page.locator("select").nth(1);
-    await subjectSelect.selectOption({ label: "User:ceo-pat" });
+    await page.getByLabel("Subject Namespace").selectOption("User");
+    await page.getByLabel("Subject", { exact: true }).selectOption("User:ceo-pat");
 
     await expect(page.locator(".cy canvas").first()).toBeVisible({
       timeout: 15_000,
