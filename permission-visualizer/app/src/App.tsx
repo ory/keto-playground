@@ -272,14 +272,28 @@ function App() {
   const stylesheet = useMemo(() => getCytoscapeStylesheet(), []);
 
   const handleCyInit = useCallback((cy: cytoscape.Core) => {
+    // react-cytoscapejs calls this on every render; wire each instance up once.
+    if (cyRef.current === cy) return;
     cyRef.current = cy;
-    cy.on("layoutstop", () => {
+    const fitGraph = () => {
       cy.fit(undefined, 40);
       if (cy.zoom() > MAX_FIT_ZOOM) {
         cy.zoom(MAX_FIT_ZOOM);
         cy.center();
       }
-    });
+    };
+    cy.on("layoutstop", fitGraph);
+    // Cytoscape only notices window resizes; refit when the panel itself changes size
+    // (header wrapping, the truncation notice appearing).
+    const container = cy.container();
+    if (container) {
+      const observer = new ResizeObserver(() => {
+        cy.resize();
+        fitGraph();
+      });
+      observer.observe(container);
+      cy.on("destroy", () => observer.disconnect());
+    }
     cy.on("tap", "node", (evt) => {
       setSelectedNodeId(evt.target.id());
     });
@@ -580,14 +594,6 @@ function App() {
               </div>
             </>
           )}
-          {loading && <div className="status-indicator loading">Fetching tuples...</div>}
-          {loadingPermissions && (
-            <div className="status-indicator loading">Checking permissions...</div>
-          )}
-          {error && <div className="status-indicator error">Error: {error}</div>}
-          {isLive && failedChecks > 0 && !loadingPermissions && (
-            <div className="status-indicator error">{failedChecks} permission checks failed</div>
-          )}
         </div>
       </header>
 
@@ -726,6 +732,17 @@ function App() {
             </div>
           )}
           <div className="graph-container">
+            {/* Status lives over the graph so the header never changes height mid-load. */}
+            <div className="graph-status" aria-live="polite">
+              {loading && <div className="status-indicator loading">Fetching tuples...</div>}
+              {loadingPermissions && (
+                <div className="status-indicator loading">Checking permissions...</div>
+              )}
+              {error && <div className="status-indicator error">Error: {error}</div>}
+              {isLive && failedChecks > 0 && !loadingPermissions && (
+                <div className="status-indicator error">{failedChecks} permission checks failed</div>
+              )}
+            </div>
             {!selectedExample ? (
               <div className="empty-state">
                 <div className="icon">&#x1F510;</div>
