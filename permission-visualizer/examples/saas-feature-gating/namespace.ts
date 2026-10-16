@@ -1,4 +1,4 @@
-import { Namespace, Context } from "@ory/keto-namespace-types"
+import { Namespace, SubjectSet, Context } from "@ory/keto-namespace-types"
 
 class User implements Namespace {}
 
@@ -11,7 +11,7 @@ class Organization implements Namespace {
 
 class Plan implements Namespace {
   related: {
-    org_members: Organization[]
+    org_members: (SubjectSet<Organization, "members"> | SubjectSet<Organization, "admins">)[]
   }
 }
 

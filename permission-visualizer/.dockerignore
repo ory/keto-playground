@@ -1,0 +1,14 @@
+# Keep secrets and local artefacts out of the build context (the Dockerfile only
+# copies what it needs, but everything here would still be sent to the daemon).
+.env
+.env.*
+!.env.example
+**/node_modules
+app/dist
+app/test-results
+app/playwright-report
+app/tests
+test
+local-keto
+examples
+scripts

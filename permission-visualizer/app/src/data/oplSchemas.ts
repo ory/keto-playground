@@ -99,7 +99,7 @@ class BankAccount implements Namespace {
 }
 `,
 
-  "rag-document-access": `import { Namespace, Context } from "@ory/keto-namespace-types"
+  "rag-document-access": `import { Namespace, SubjectSet, Context } from "@ory/keto-namespace-types"
 
 class User implements Namespace {}
 
@@ -113,7 +113,7 @@ class Document implements Namespace {
   related: {
     owner: User[]
     editors: User[]
-    viewers: (User | Team)[]
+    viewers: (User | SubjectSet<Team, "members">)[]
   }
 
   permits = {
@@ -195,7 +195,7 @@ class Customer implements Namespace {
 }
 `,
 
-  "saas-feature-gating": `import { Namespace, Context } from "@ory/keto-namespace-types"
+  "saas-feature-gating": `import { Namespace, SubjectSet, Context } from "@ory/keto-namespace-types"
 
 class User implements Namespace {}
 
@@ -208,7 +208,7 @@ class Organization implements Namespace {
 
 class Plan implements Namespace {
   related: {
-    org_members: Organization[]
+    org_members: (SubjectSet<Organization, "members"> | SubjectSet<Organization, "admins">)[]
   }
 }
 

@@ -117,6 +117,17 @@ const EXAMPLES: Record<string, ExampleMeta> = {
       Article: "#06b6d4",
     },
   },
+
+  // Live only (no offline data): the large generated graph from local-keto/.
+  "local-deep-graph": {
+    name: "Local deep graph (local-keto)",
+    description:
+      "Generated stress graph: groups nested 5 levels, an 8-level folder tree and 3,000 documents. Start it with local-keto/up.sh.",
+    permissions: [
+      { namespace: "Document", permissions: ["view", "edit"] },
+      { namespace: "Folder", permissions: ["view", "edit", "own"] },
+    ],
+  },
 };
 
 export default EXAMPLES;

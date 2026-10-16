@@ -117,8 +117,10 @@ test.describe("Relationship Editor (offline mode)", () => {
       .fill("brand-new-user-xyz");
     await page.locator(".rel-add-form button[type='submit']").click();
 
-    const userSelect = page.locator("select").nth(1);
-    const options = await userSelect.locator("option").allTextContents();
+    // The new subject_id appears under the "Direct ID" namespace group.
+    await page.getByLabel("Subject Namespace").selectOption("Direct ID");
+    const subjectSelect = page.getByLabel("Subject", { exact: true });
+    const options = await subjectSelect.locator("option").allTextContents();
     expect(options).toContain("brand-new-user-xyz");
   });
 

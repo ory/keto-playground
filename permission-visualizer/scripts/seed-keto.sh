@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Applies OPL and creates relation tuples for a given Keto permission example.
-# Usage: bash scripts/seed-keto.sh <example-name>
+# Usage: bash scripts/seed-keto.sh <example-name> [--yes]
 # Example: bash scripts/seed-keto.sh content-publishing-workflow
+#
+# Needs the Ory CLI (`ory auth`) plus ORY_PROJECT and ORY_WORKSPACE (from .env or the
+# environment). Replaces the project's whole permission model (OPL): use a scratch project.
+# --yes skips the confirmation prompt.
 
 set -euo pipefail
 
@@ -9,14 +13,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Source environment variables (supports both plain KEY=VALUE and export KEY=VALUE)
-set -a
-source "$PROJECT_ROOT/.env"
-set +a
+if [ -f "$PROJECT_ROOT/.env" ]; then
+  set -a
+  source "$PROJECT_ROOT/.env"
+  set +a
+fi
 
 EXAMPLE="${1:-}"
+ASSUME_YES="${2:-}"
 
 if [ -z "$EXAMPLE" ]; then
-  echo "Usage: $0 <example-name>"
+  echo "Usage: $0 <example-name> [--yes]"
   echo ""
   echo "Available examples:"
   for d in "$PROJECT_ROOT/examples/"/*/; do
@@ -24,6 +31,9 @@ if [ -z "$EXAMPLE" ]; then
   done
   exit 1
 fi
+
+: "${ORY_PROJECT:?set ORY_PROJECT (the project ID) in .env or the environment}"
+: "${ORY_WORKSPACE:?set ORY_WORKSPACE (the workspace ID) in .env or the environment}"
 
 EXAMPLE_DIR="$PROJECT_ROOT/examples/$EXAMPLE"
 OPL_FILE="$EXAMPLE_DIR/namespace.ts"
@@ -37,6 +47,13 @@ fi
 if [ ! -f "$REL_FILE" ]; then
   echo "Error: Relationships file not found: $REL_FILE"
   exit 1
+fi
+
+echo "Target: project $ORY_PROJECT (workspace $ORY_WORKSPACE)"
+echo "This REPLACES the project's permission model (OPL) with examples/$EXAMPLE/namespace.ts."
+if [ "$ASSUME_YES" != "--yes" ]; then
+  read -r -p "Continue? [y/N] " answer
+  [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
 fi
 
 # Step 1: Apply OPL

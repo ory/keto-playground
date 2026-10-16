@@ -56,10 +56,13 @@ interface EditingRow {
   subject: string;
 }
 
+// "/" is allowed for class-scoped objects named `<base>/<class>`.
+const OBJECT_PATTERN = /^[a-zA-Z0-9_:./-]+$/;
+
 function validateAddForm(form: AddForm): string | null {
   if (!form.namespace) return "Namespace is required";
   if (!form.object.trim()) return "Object is required";
-  if (!/^[a-zA-Z0-9_:.-]+$/.test(form.object.trim())) return "Object contains invalid characters";
+  if (!OBJECT_PATTERN.test(form.object.trim())) return "Object contains invalid characters";
   if (!form.relation.trim()) return "Relation is required";
   if (!/^[a-zA-Z0-9_]+$/.test(form.relation.trim())) return "Relation contains invalid characters";
   if (form.subjectType === "user_id") {
@@ -83,7 +86,7 @@ function validateEditRow({
 }: EditingRow): string | null {
   if (!namespace) return "Namespace is required";
   if (!object.trim()) return "Object is required";
-  if (!/^[a-zA-Z0-9_:.-]+$/.test(object.trim())) return "Object contains invalid characters";
+  if (!OBJECT_PATTERN.test(object.trim())) return "Object contains invalid characters";
   if (!relation.trim()) return "Relation is required";
   if (!/^[a-zA-Z0-9_]+$/.test(relation.trim())) return "Relation contains invalid characters";
   if (!subject.trim()) return "Subject is required";
