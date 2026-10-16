@@ -80,11 +80,33 @@ Open **http://localhost:5173**. The Vite dev server proxies `/api/*` requests to
 ### Docker
 
 ```bash
-make docker-build
-make docker-run   # reads .env for ORY_SDK_URL and ORY_ACCESS_TOKEN
+make docker-build   # distroless image (gcr.io/distroless/nodejs24), linux/amd64 by default
+make docker-run     # reads .env; published on 127.0.0.1:3000 only
+make docker-push    # builds and pushes registry.macgyver.work/keto-playground:<git sha> and :latest
 ```
 
-The production container uses a zero-dependency Node.js server (`server.js`) that serves the built SPA and proxies `/api/*` to Ory. Runs on port 3000 by default.
+The production container uses a zero-dependency Node.js server (`server.js`) that serves the built SPA and proxies `/api/*` to Ory. Runs on port 3000 by default. Override `PLATFORM`, `REGISTRY` or `REGISTRY_IMAGE` on the `make` command line.
+
+> **Do not expose the server publicly without an authenticating proxy in front of it.** The proxy only forwards the
+> visualizer's own Keto reads and checks (see below), but anyone who can reach it can read every relationship and,
+> with `ALLOW_TUPLE_DELETE=1`, delete them.
+
+### Local Keto with a large, deep graph
+
+`permission-visualizer/local-keto/` runs Ory Keto (open-source `oryd/keto` by default; set `KETO_IMAGE` for the
+Enterprise build) on Postgres behind a small router, and seeds a generated graph: groups nested 5 levels, an 8-level
+folder tree, 3,000 documents, ~400 users, ClaudeClass-scoped documents and a few legacy `subject_id` tuples (~11k tuples).
+
+```bash
+cd permission-visualizer
+bash local-keto/up.sh     # start (fresh database), load the OPL, seed
+ORY_SDK_URL=http://localhost:4455 ORY_ACCESS_TOKEN=local ALLOW_TUPLE_DELETE=1 make dev
+bash local-keto/down.sh   # stop and remove
+```
+
+In the app pick **Live → "Local deep graph (local-keto)"** (runs permission checks) or **Explore Live Data**.
+`local-keto/keto.yml` sets `max_read_depth: 18`, the smallest depth at which the deepest paths evaluate as allowed —
+see the comment there for the cost of denied checks on deep models.
 
 ## How It Works
 
@@ -97,16 +119,22 @@ Browser (React + Cytoscape.js)
     ▼
 Vite Dev Proxy (:5173/api/*) — or — server.js (:3000/api/*)
     |
-    |  + Authorization: Bearer <PAT>
+    |  only GET /namespaces, GET /relation-tuples, POST /relation-tuples/check
+    |  (+ DELETE /admin/relation-tuples with ALLOW_TUPLE_DELETE=1); everything else 404
+    |  + Authorization: Bearer <PAT>   (no cookies forwarded, Set-Cookie stripped)
     ▼
 Ory Network API (ORY_SDK_URL)
 ```
 
+The project API key reaches every admin API of the project, so the proxy forwards only the visualizer's own
+requests (`proxy-policy.mjs`). `server.js` also checks the `Host` header (DNS rebinding) and refuses cross-origin writes.
+
 1. **Fetch namespaces** — gets the list of entity types from the current OPL
 2. **Fetch all tuples** — paginated fetch across all namespaces
-3. **Derive subjects** — collects namespaced subject sets (`User:alice`) plus legacy `subject_id` values from tuples
-4. **Build graph** — when a user is selected, traces their connections through the tuple graph
-5. **Check permissions** — runs permission checks for all relevant resources and displays ALLOWED/DENIED badges
+3. **Derive subjects** — collects entity subject sets (`User:alice`), subject sets with a relation (`Team:engineering#members`) and legacy `subject_id` values; the picker groups them by namespace
+4. **Build graph** — traces the selected subject's connections (optionally one **Branch** only, or scoped to one ClaudeClass); stops at 150 nodes with a notice
+5. **Check permissions** — in Live mode, checks the example's permissions for the objects in the graph and shows ALLOWED/DENIED badges
+6. **Delete** (Live mode, `ALLOW_TUPLE_DELETE=1`) — tap a node to delete the tuples that reference it, after confirmation
 
 If no API is reachable, the app falls back to bundled offline data generated from `examples/`.
 
@@ -114,12 +142,15 @@ If no API is reachable, the app falls back to bundled offline data generated fro
 
 Environment variables are read from `permission-visualizer/.env`:
 
-| Variable           | Default                 | Description                      |
-| ------------------ | ----------------------- | -------------------------------- |
-| `ORY_ACCESS_TOKEN` | (required)              | PAT injected into proxy requests |
-| `ORY_TUNNEL_URL`   | `http://localhost:4000` | Where the ory tunnel is running  |
-| `ORY_SDK_URL`      | —                       | Your Ory project URL (e.g. `https://your-project.projects.oryapis.com`) |
-| `ORY_ACCESS_TOKEN` | —                       | Ory PAT, injected into proxy requests |
+| Variable             | Default                      | Description |
+| -------------------- | ---------------------------- | ----------- |
+| `ORY_SDK_URL`        | `ORY_TUNNEL_URL`             | Your Ory project URL (e.g. `https://your-project.projects.oryapis.com`) |
+| `ORY_TUNNEL_URL`     | `http://localhost:4000`      | Where the ory tunnel is running (used when `ORY_SDK_URL` is unset) |
+| `ORY_ACCESS_TOKEN`   | —                            | Project API key, injected into proxied requests |
+| `ALLOW_TUPLE_DELETE` | off                          | `1` lets the proxy delete relation tuples (Live-mode node delete) |
+| `ALLOWED_HOSTS`      | `localhost,127.0.0.1,[::1]`  | `server.js`: hostnames it answers on |
+| `HOST` / `PORT`      | `127.0.0.1` / `3000`         | `server.js` listen address (the image sets `HOST=0.0.0.0`) |
+| `ORY_PROJECT`, `ORY_WORKSPACE` | —                  | `make seed` only: the project to replace the OPL of |
 
 ## Available Use Cases
 
@@ -145,26 +176,31 @@ Run all targets from `permission-visualizer/`:
 | `make build` | Install deps and create the production bundle |
 | `make seed EXAMPLE=<name>` | Seed a use case into Ory Keto |
 | `make generate-offline` | Regenerate offline data from `examples/` |
-| `make docker-build` | Build the Docker image |
-| `make docker-run` | Run the container (reads `.env`) |
+| `make docker-build` | Build the distroless Docker image (`linux/amd64`) |
+| `make docker-run` | Run the container on 127.0.0.1 (reads `.env`) |
+| `make docker-push` | Build and push to `registry.macgyver.work/keto-playground` |
+| `make test` | Unit tests for the proxy policy and servers (`node --test`) |
 | `make clean` | Remove `dist/` and `node_modules/` |
 
 ## Tech Stack
 
 - [React](https://react.dev/) + [TypeScript](https://www.typescriptlang.org/) + [Vite](https://vite.dev/)
-- [Cytoscape.js](https://js.cytoscape.org/) with [dagre layout](https://github.com/cytoscape/cytoscape.js-dagre) for directed graph rendering
+- [Cytoscape.js](https://js.cytoscape.org/) for graph rendering, with a breadth-first tiered layout around the selected subject
 - Ory Keto REST API (via dev proxy or production server)
 
 ## Tests
 
 ```bash
-cd permission-visualizer/app
-npx playwright install chromium
-npx playwright test
+cd permission-visualizer
+make test                                  # node:test — proxy policy, server.js, Vite proxy
+cd app && npx playwright install chromium
+npx playwright test                        # offline specs run anywhere
+# live specs need the local Keto (bash local-keto/up.sh):
+ORY_SDK_URL=http://localhost:4455 ORY_ACCESS_TOKEN=local ALLOW_TUPLE_DELETE=1 npx playwright test
 ```
 
-| Test file                           | Requires                                        |
-| ----------------------------------- | ----------------------------------------------- |
-| `tests/relationship-editor.spec.ts` | Nothing — uses offline bundled data (18 tests)  |
-| `tests/schema-editor.spec.ts`       | Nothing — uses offline bundled data (10 tests)  |
-| `tests/visualizer.spec.ts`          | Live Ory tunnel on port 4000 (11 tests)         |
+| Test file | Requires |
+| --------- | -------- |
+| `tests/relationship-editor.spec.ts`, `tests/schema-editor.spec.ts`, `tests/graph-offline.spec.ts`, `tests/subject-graph-offline.spec.ts` | Nothing — bundled offline data |
+| `tests/visualizer.spec.ts`, `tests/live-explore.spec.ts`, `tests/proxy-policy.spec.ts` | The local Keto from `local-keto/` |
+| `../test/*.test.mjs` | Nothing — fake upstream servers |
