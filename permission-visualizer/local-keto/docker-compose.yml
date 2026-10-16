@@ -1,0 +1,57 @@
+# Local Ory Keto for exercising the visualizer with a large, deep permission graph —
+# no Ory Network project or API key needed.
+#   bash local-keto/up.sh     (start, load OPL, seed generated tuples)
+# Uses the open-source image by default; to run the Ory Enterprise License build:
+#   KETO_IMAGE=europe-docker.pkg.dev/ory-artifacts/ory-enterprise-keto/keto-oel:26.4.3 bash local-keto/up.sh
+name: keto-playground-local
+
+services:
+  # Postgres rather than Keto's in-memory SQLite: SQLite locks up under the app's
+  # concurrent deletes and permission checks.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: keto
+      POSTGRES_PASSWORD: keto
+      POSTGRES_DB: keto
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keto -d keto"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  keto-migrate:
+    image: ${KETO_IMAGE:-oryd/keto:v26.2.0}
+    command: migrate up --yes -c /etc/config/keto/keto.yml
+    environment:
+      DSN: postgres://keto:keto@postgres:5432/keto?sslmode=disable
+    volumes:
+      - ./keto.yml:/etc/config/keto/keto.yml:ro
+      - ./namespaces.ts:/etc/config/keto/namespaces.ts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  keto:
+    image: ${KETO_IMAGE:-oryd/keto:v26.2.0}
+    command: serve -c /etc/config/keto/keto.yml
+    environment:
+      DSN: postgres://keto:keto@postgres:5432/keto?sslmode=disable
+    volumes:
+      - ./keto.yml:/etc/config/keto/keto.yml:ro
+      - ./namespaces.ts:/etc/config/keto/namespaces.ts:ro
+    depends_on:
+      keto-migrate:
+        condition: service_completed_successfully
+
+  # Ory Network serves Keto's read and write APIs on one host; self-hosted Keto
+  # splits them across two ports. This router restores the single-host shape the
+  # app's /api proxy expects: /admin/* -> write API, everything else -> read API.
+  router:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./router.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:4455:4455"
+    depends_on:
+      - keto

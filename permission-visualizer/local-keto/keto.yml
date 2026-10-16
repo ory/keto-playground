@@ -1,0 +1,25 @@
+# The DSN comes from the environment (docker-compose.yml); up.sh recreates the
+# database so every run starts from a freshly generated dataset.
+
+namespaces:
+  location: file:///etc/config/keto/namespaces.ts
+
+serve:
+  read:
+    host: 0.0.0.0
+    port: 4466
+  write:
+    host: 0.0.0.0
+    port: 4467
+
+# The generated graph nests groups 5 levels and folders 8 levels deep; a document
+# check walks both. 18 is the smallest depth at which the deepest path evaluates to
+# allowed (below it those checks come back denied although the graph shows the path).
+# Denied checks get expensive with depth: Keto exhausts every path before saying no
+# (about 1.8 s for the worst document here at 18, 2.7 s at 20).
+limit:
+  max_read_depth: 18
+
+log:
+  level: info
+  format: text
